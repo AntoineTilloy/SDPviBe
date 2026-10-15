@@ -1,0 +1,38 @@
+diff --git a/src/StressTensors3d/Programs/OPEScanNmax14.hs b/src/StressTensors3d/Programs/OPEScanNmax14.hs
+index 270deff..929c81b 100644
+--- a/src/StressTensors3d/Programs/OPEScanNmax14.hs
++++ b/src/StressTensors3d/Programs/OPEScanNmax14.hs
+@@ -29,7 +29,10 @@ import StressTensors3d.Programs.TSigEpsOPEScan    (TSigEpsDelaunayConfig (..),
+                                                    TSigEpsParams (..),
+                                                    spectrumDefaultGaps,
+                                                    tSigEpsDelaunaySearch,
++                                                   tSigEpsFeasible,
+                                                    tSigEpsOPEScan)
++import Control.Monad                              (void)
++import Hyperion.Bootstrap.Bound                   qualified as Bound
+ 
+ paramsNmax14 :: TSigEpsParams
+ paramsNmax14 = MkTSigEpsParams
+@@ -123,4 +126,22 @@ boundsProgram "TSigEps_nmax_14_delaunay_search" =
+       [ -- (0.51814862049422056937547850,1.4126227533608918239171971)
+       ]
+ 
++-- SDPviBe: one feasibility problem at a known allowed point, with the production block parameters
++-- (the SDP is then solved outside hyperion; see SDPviBe/vast/st3d_point.sh)
++boundsProgram "SDPviBe_nmax10_point" =
++  local (setJobType (MPIJob 1 256) . setJobTime (48*hour) . setJobMemory "0G") $
++  void $ Bound.remoteComputeKeepFiles $
++  tSigEpsFeasible spectrumDefaultGaps params (fst p) (Just (snd p))
++  where
++    p = head allowedPointsNmax14
++    -- the production nmax=10 parameters of nmax10TightDelaunay3d (TSigEps2023.hs)
++    params = MkTSigEpsParams { maxSpin = 60, order = 60, numPoles = 20, precision = 512, nmax = 10 }
++
++boundsProgram "SDPviBe_nmax14_point" =
++  local (setJobType (MPIJob 1 256) . setJobTime (48*hour) . setJobMemory "0G") $
++  void $ Bound.remoteComputeKeepFiles $
++  tSigEpsFeasible spectrumDefaultGaps paramsNmax14 (fst p) (Just (snd p))
++  where
++    p = head allowedPointsNmax14
++
+ boundsProgram p = unknownProgram p

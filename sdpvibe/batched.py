@@ -97,6 +97,41 @@ def _bgemm_kernel(Ahi, Alo, Bhi, Blo, ACC, mods, minv, c14s, g0, nb, M, N, KC,
     tl.store(ACC + o, _fmod(v, m, mi).to(tl.int16), mask=msk)
 
 
+@triton.jit
+def _syrk_lower_kernel(Ahi, Alo, ACC, mods, minv, c14s, g0, N, KC,
+                       BM: tl.constexpr, BK: tl.constexpr):
+    """ACC[g] (N x N, int16) += residues of A A^T mod m_g, lower-triangle tiles only (pn <= pm).
+    A*: (G, N, KC) int8 hi/lo residues."""
+    pm = tl.program_id(0); pn = tl.program_id(1); gid = tl.program_id(2)
+    if pn > pm:
+        return
+    ri = pm * BM + tl.arange(0, BM)
+    rj = pn * BM + tl.arange(0, BM)
+    ba = gid.to(tl.int64) * N * KC
+    hh = tl.zeros((BM, BM), dtype=tl.int32)
+    hx = tl.zeros((BM, BM), dtype=tl.int32)
+    ll = tl.zeros((BM, BM), dtype=tl.int32)
+    for k0 in range(0, KC, BK):
+        ks = k0 + tl.arange(0, BK)
+        ma = (ri[:, None] < N) & (ks[None, :] < KC)
+        mb = (rj[None, :] < N) & (ks[:, None] < KC)
+        pa = ba + ri[:, None] * KC + ks[None, :]
+        pb = ba + rj[None, :] * KC + ks[:, None]
+        ah = tl.load(Ahi + pa, mask=ma, other=0); al = tl.load(Alo + pa, mask=ma, other=0)
+        bh = tl.load(Ahi + pb, mask=mb, other=0); bl = tl.load(Alo + pb, mask=mb, other=0)
+        hh = tl.dot(ah, bh, hh, out_dtype=tl.int32)
+        hx = tl.dot(ah, bl, hx, out_dtype=tl.int32)
+        hx = tl.dot(al, bh, hx, out_dtype=tl.int32)
+        ll = tl.dot(al, bl, ll, out_dtype=tl.int32)
+    g = g0 + gid
+    m = tl.load(mods + g); mi = tl.load(minv + g); c = tl.load(c14s + g)
+    o = g.to(tl.int64) * N * N + ri[:, None] * N + rj[None, :]
+    msk = (ri[:, None] < N) & (rj[None, :] < N)
+    old = tl.load(ACC + o, mask=msk, other=0).to(tl.int32)
+    v = _fmod(hh, m, mi) * c + _fmod(hx, m, mi) * 128 + _fmod(ll, m, mi) + old
+    tl.store(ACC + o, _fmod(v, m, mi).to(tl.int16), mask=msk)
+
+
 def bgemm_nt(A, Bt, out_exp="col", kc=4096, bt_rowexp=None):
     """C[b] = A[b] @ Bt[b]^T for all b. A: uniform int exponent. Bt: int exponent or per-row
     exponents bt_rowexp (nb, N). out_exp: 'col' (dynamic per (block, column)), 'mat' (dynamic per

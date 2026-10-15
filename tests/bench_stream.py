@@ -4,7 +4,7 @@ N ~ nmax^2, number of blocks ~ nmax, points per block ~ nmax.  Runs a few iterat
 memory layout and reports per-iteration time, peak memory and host<->GPU traffic.
 usage: python tests/bench_stream.py --nmax 10 [--prec 1024] [--its 4] [--stream none|auto|all]
                                     [--budget GB] [--chunk GB] [--scale-blocks 1.0]"""
-import argparse, os, sys, time
+import argparse, json, os, sys, time
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")   # streaming: less fragmentation
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
@@ -35,6 +35,7 @@ ap.add_argument("--budget", type=float)
 ap.add_argument("--chunk", type=float)
 ap.add_argument("--scale-blocks", type=float, default=1.0)
 ap.add_argument("--plan-only", action="store_true")
+ap.add_argument("--shape", help="shape json from python -m sdpvibe.prepare: replay a real SDP's block shapes")
 ap.add_argument("--bw", action="store_true", help="measure pinned host<->GPU bandwidth and exit")
 a = ap.parse_args()
 if a.bw:
@@ -47,13 +48,17 @@ if a.bw:
 if a.budget:                                     # emulate a smaller GPU (hard cap)
     os.environ["SDPB_GPU_MEM_GB"] = str(a.budget)
 L = (a.prec + 2 + 31) // 32 + 1
-blocks, N = st3d_like(a.nmax, a.scale_blocks)
+if a.shape:
+    sh = json.load(open(a.shape))
+    blocks = [dict(dim=d, K=K, he=he, ho=ho) for d, K, he, ho in sh["block_shapes"]]; N = sh["N"]
+else:
+    blocks, N = st3d_like(a.nmax, a.scale_blocks)
 G = 2 ** 30
 lay = Layout(blocks, N, L, a.budget and a.budget * G, a.chunk and a.chunk * G, a.stream)
 tot = {}
 for c in lay.chunks:
     for k, v in lay.items(blocks, c).items(): tot[k] = tot.get(k, 0) + v
-print(f"nmax~{a.nmax}: N={N}, {len(blocks)} blocks, max P={max(Layout.shape(blocks, c)[4] for c in lay.chunks)}, L={L}; "
+print(f"{a.shape or 'nmax~' + str(a.nmax)}: N={N}, {len(blocks)} blocks, max P={max(Layout.shape(blocks, c)[4] for c in lay.chunks)}, L={L}; "
       f"arrays: " + ", ".join(f"{k} {v / G:.1f} GB" for k, v in tot.items()) + f"; Q {N * N * (4 * L + 8) / G:.1f} GB", flush=True)
 print("layout:", lay.describe(), flush=True)
 if a.plan_only: sys.exit()
@@ -66,6 +71,6 @@ torch.cuda.reset_peak_memory_stats()
 S.run(max_iter=a.its, log=log, verbose=True)
 st = sdp.store
 ti = [r["iter_time"] for r in log]
-print(f"RESULT nmax={a.nmax} stream={a.stream} budget={a.budget} chunks={len(sdp.groups)}: iteration times {ti}; "
+print(f"RESULT {a.shape or 'nmax=' + str(a.nmax)} stream={a.stream} budget={a.budget} chunks={len(sdp.groups)}: iteration times {ti}; "
       f"median after first {np.median(ti[1:]):.2f} s; peak GPU {max(S.timers.peak.values(), default=torch.cuda.max_memory_allocated()) / G:.2f} GB; "
       f"H2D {st.bytes_h2d / G / len(ti):.1f} GB/it, D2H {st.bytes_d2h / G / len(ti):.1f} GB/it", flush=True)

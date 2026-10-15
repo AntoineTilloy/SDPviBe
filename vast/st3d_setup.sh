@@ -85,7 +85,7 @@ config = (defaultHyperionConfig "/root/hyp") { emailAddr = Nothing }
 staticConfig :: HyperionStaticConfig
 staticConfig = defaultHyperionStaticConfig
 EOF
-NP=${SDPB_RANKS:-64}
+NP=${SDPB_RANKS:-$(nproc)}
 cat > $C/blocks_3d.sh <<EOF
 #!/bin/bash
 $B3/usr/local/bin/blocks_3d "\$@"
@@ -101,12 +101,21 @@ echo pmp2sdp "\$@" >> /root/hyp/pmp2sdp_calls.log
 $R/usr/bin/mpirun --allow-run-as-root -n $NP $R/usr/local/bin/pmp2sdp "\$@"
 EOF
 done
-for s in sdpb srun_sdpb; do cat > $C/$s.sh <<EOF
+# SDPB_WRAPPER=block: hyperion only builds the SDP; its sdpb call is logged and parked (the SDP is
+# solved outside hyperion, see vast/st3d_point.sh); default: official SDPB on all cores
+for s in sdpb srun_sdpb; do
+if [ "${SDPB_WRAPPER:-run}" = block ]; then cat > $C/$s.sh <<EOF
+#!/bin/bash
+echo "\$(date +%s) sdpb \$@" >> /root/hyp/sdpb_calls.log
+exec sleep infinity
+EOF
+else cat > $C/$s.sh <<EOF
 #!/bin/bash
 export OPAL_PREFIX=$R/usr OMPI_ALLOW_RUN_AS_ROOT=1 OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
 echo sdpb "\$@" >> /root/hyp/sdpb_calls.log
 $R/usr/bin/mpirun --allow-run-as-root --bind-to core -n $NP $R/usr/local/bin/sdpb "\$@"
 EOF
+fi
 done
 cat > $C/qdelaunay.sh <<'EOF'
 #!/bin/bash

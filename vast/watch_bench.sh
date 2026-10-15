@@ -12,7 +12,7 @@ while true; do
     [ $n -gt $seen ] && echo "$out" | tail -n $((n - seen)) && seen=$n
     if echo "$out" | grep -q "DONE\|shutting down"; then
       mkdir -p $DEST
-      ssh -p $PT $H 'tar czf - -C SDPviBe results runs/mixed_n10_ising/gpu_whole runs/mixed_n10_ising/gpu_stream' 2>/dev/null | tar xzf - -C $DEST
+      ssh -p $PT $H 'tar czf - -C SDPviBe results' 2>/dev/null | tar xzf - -C $DEST
       ssh -p $PT $H 'touch SDPviBe/results/PULLED' 2>/dev/null
       echo "PULLED"; exit 0
     fi

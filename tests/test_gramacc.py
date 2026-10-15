@@ -15,6 +15,8 @@ for scales in ([0, 0, 0], [0, 10, -40], [0, 60, -5]):                 # chunk sc
     acc = F.GramAcc(N, L)
     for c in chunks: acc.add(c)
     Q = acc.result()
+    low = torch.tril(torch.ones(N, N, dtype=torch.bool, device="cuda"))   # lower triangle is the result
+    Q = F.MPF(torch.where(low, Q.m, ref.m), torch.where(low, Q.e, ref.e))
     d = F.add(Q, ref, -1)
     rel = F.max_abs(d) / F.max_abs(ref)
     print(f"scales {scales}: flushes {acc.flushes}, max |Q - Q_ref| / max |Q_ref| = {mp.nstr(rel, 3)} "

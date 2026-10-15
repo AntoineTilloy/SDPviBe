@@ -542,8 +542,9 @@ class GramAcc:
         self.flushes = 0
 
     def add(self, P):
-        """P: MPF (rows, N)"""
-        from .batched import _bgemm_kernel
+        """P: MPF (rows, N).  Only the lower triangle of the result is accumulated (Q is symmetric;
+        callers mirror it, e.g. copy_lower_to_upper before the Cholesky factorisation)."""
+        from .batched import _syrk_lower_kernel
         import triton
         L, N, R = self.L, self.N, self.R
         tp = _top(P).amax(0)                                         # (N,) column tops
@@ -571,9 +572,9 @@ class GramAcc:
             for g0 in range(0, R.n, GR):
                 G = min(GR, R.n - g0)
                 Ah, Al = R.residues(Xv, k0, kk, g0, G)
-                _bgemm_kernel[(triton.cdiv(N, BM), triton.cdiv(N, BM), G)](
-                    Ah, Al, Ah, Al, self.acc, R.m32, R.mi32, R.c14, g0, 1, N, N, kk,
-                    BM=BM, BN=BM, BK=32 if kk < 64 else 64, num_warps=8 if BM == 128 else 4, num_stages=3)
+                _syrk_lower_kernel[(triton.cdiv(N, BM), triton.cdiv(N, BM), G)](
+                    Ah, Al, self.acc, R.m32, R.mi32, R.c14, g0, N, kk,
+                    BM=BM, BK=32 if kk < 64 else 64, num_warps=8 if BM == 128 else 4, num_stages=3)
                 del Ah, Al
 
     def _crt(self):

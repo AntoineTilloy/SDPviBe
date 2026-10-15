@@ -22,11 +22,20 @@ print(f"read SDP: {sdp.nblocks} blocks in {len(sdp.groups)} groups, N={sdp.N}, p
       f"({32 * L - 2} bits) in {time.time() - t0:.1f}s [{sdp.read_info}]", flush=True)
 params = {k: getattr(a, k) for k in DEFAULTS}
 solver = Solver(sdp, L, **params)
-log = []
-res = solver.run(log=log)
 out = a.outDir or a.sdpDir.rstrip("/") + "_gpu_out"
 os.makedirs(out, exist_ok=True)
-json.dump(log, open(os.path.join(out, "iterations.json"), "w"), indent=0)
+
+
+class IterLog(list):
+    """iterations.json rewritten after every iteration (survives an interrupted run)"""
+    def append(self, row):
+        super().append(row)
+        tmp = os.path.join(out, "iterations.json.tmp")
+        json.dump(self, open(tmp, "w"), indent=0); os.replace(tmp, os.path.join(out, "iterations.json"))
+
+
+log = IterLog()
+res = solver.run(log=log)
 with open(os.path.join(out, "out.txt"), "w") as f:
     for k, v in res.items():
         f.write(f"{k} = {mp.nstr(v, 40) if isinstance(v, mp.mpf) else v};\n")

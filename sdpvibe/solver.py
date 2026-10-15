@@ -153,6 +153,33 @@ def _parse_block(j):
 def _gb(x): return x / 2 ** 30
 
 
+def load_raw(path, L, workers=None, nblocks=None):
+    """parse all blocks of a pmp2sdp JSON directory on the CPU (parallel), cached as
+    <path>/sdpvibe_raw_L<L>.pkl (python -m sdpvibe.prepare builds the cache ahead of time)"""
+    t0 = time.time()
+    if nblocks is None:
+        nblocks = json.load(open(os.path.join(path, "control.json")))["num_blocks"]
+    cache = os.path.join(path, f"sdpvibe_raw_L{L}.pkl")
+    if os.path.exists(cache) and os.path.getmtime(cache) > os.path.getmtime(os.path.join(path, "control.json")):
+        with open(cache, "rb") as f: raw = pickle.load(f)
+        return raw, f"raw cache {time.time() - t0:.1f}s"
+    global _PARSE
+    _PARSE = (path, L)
+    import multiprocessing
+    nw = workers or min(nblocks, os.cpu_count() or 1)
+    if nw > 1:
+        with multiprocessing.get_context("fork").Pool(nw) as pool:
+            raw = pool.map(_parse_block, range(nblocks), chunksize=1)
+    else:
+        raw = [_parse_block(j) for j in range(nblocks)]
+    info = f"parse {time.time() - t0:.1f}s ({nw} workers)"
+    try:
+        with open(cache, "wb") as f: pickle.dump(raw, f, protocol=5)
+    except OSError:
+        pass
+    return raw, info
+
+
 class Layout:
     """Memory plan: blocks of equal dim are batched in chunks; each chunk's large arrays
     (B, Pm = L_S^{-1} B, Cholesky of S, pairings A_X_inv / A_Y) are GPU-resident or streamed
@@ -288,29 +315,12 @@ class SDP:
         obj = rd("objectives.json")
         const = mp.mpf(obj.get("constant", "0"))
         b = F.from_strings(obj["b"], L, (len(obj["b"]), 1))
-        cache = os.path.join(path, f"sdpvibe_raw_L{L}.pkl")
-        if os.path.exists(cache) and os.path.getmtime(cache) > os.path.getmtime(os.path.join(path, "control.json")):
-            with open(cache, "rb") as f: raw = pickle.load(f)
-            info = "raw cache"
-        else:
-            global _PARSE
-            _PARSE = (path, L)
-            import multiprocessing
-            nw = workers or min(nblocks, os.cpu_count() or 1)
-            if nw > 1:
-                with multiprocessing.get_context("fork").Pool(nw) as pool:
-                    raw = pool.map(_parse_block, range(nblocks))
-            else:
-                raw = [_parse_block(j) for j in range(nblocks)]
-            info = f"parse {time.time() - t0:.1f}s ({nw} workers)"
-            try:
-                with open(cache, "wb") as f: pickle.dump(raw, f, protocol=5)
-            except OSError:
-                pass
+        raw, info = load_raw(path, L, workers, nblocks)
         blocks = [dict(dim=r["dim"], K=r["K"], he=r["bilinear_bases_even"][0], ho=r["bilinear_bases_odd"][0]) for r in raw]
 
         def data(j):
-            r = raw[j]; Kj = r["K"]; npair = r["dim"] * (r["dim"] + 1) // 2
+            r = raw[j]; raw[j] = None                          # free host memory as blocks are assembled
+            Kj = r["K"]; npair = r["dim"] * (r["dim"] + 1) // 2
             Vs = []
             for key in ("bilinear_bases_even", "bilinear_bases_odd"):
                 hj, arr = r[key]
