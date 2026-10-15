@@ -1,14 +1,21 @@
 # SDPviBe
 
-A GPU port of the interior-point solver of [SDPB](https://github.com/davidsd/sdpb) (the semidefinite
-program solver of the conformal bootstrap), in multiprecision arithmetic on consumer and datacenter GPUs.
+**A GPU-accelerated, vibe-coded version of [SDPB](https://github.com/davidsd/sdpb)**, the semidefinite
+program solver of the conformal bootstrap.
+
+SDPB is the work of David Simmons-Duffin, Walter Landry, Vasiliy Dommes and collaborators (see
+[Credits](#credits)); this project re-implements its interior-point algorithm in multiprecision arithmetic
+on consumer and datacenter GPUs. It is *vibe coded*: written almost entirely by an AI coding assistant
+(Claude, Anthropic) under the direction of Antoine Tilloy, and validated by comparing its iterations with
+official SDPB rather than by line-by-line human review. It is a research prototype, not a replacement for
+SDPB: use SDPB for results you publish, or cross-check with it.
 
 It reads the SDPs produced by SDPB's `pmp2sdp` and follows SDPB 3.1's algorithm step by step (same
 residues, Schur complement, Mehrotra predictor-corrector, step lengths and termination criteria), so its
 iterations can be compared one to one with SDPB's `iterations.json`.
 
-**Status: research prototype.** Validated against official SDPB on 3d Ising problems (below); used so far
-for single-correlator and mixed (sigma, epsilon) Ising bounds and the stress-tensor system of Chang et al.
+So far it has been validated against official SDPB on 3d Ising problems (below) and used for
+single-correlator and mixed (sigma, epsilon) Ising bounds and the stress-tensor system of Chang et al.
 
 ## How it works
 
@@ -32,7 +39,7 @@ Iterates (mu, objectives, errors, step lengths) agree with SDPB to 1e-13 to 1e-1
 iteration counts and verdicts:
 SDPB's example; single-correlator Ising nmax=6; mixed sigma-epsilon Ising nmax=6, 10, 14, 18 (first 20
 iterations for the larger ones); stress-tensor system (T, sigma, epsilon) nmax=6, all 115 iterations.
-The KPSV nmax=6 island is reproduced. Streaming does not change results: unchunked runs are bitwise
+The KPS nmax=6 island is reproduced. Streaming does not change results: unchunked runs are bitwise
 identical to the original solver, streamed runs bitwise identical to resident ones with the same chunks,
 and a fully streamed real SDP (mixed Ising nmax=10) agrees with the resident run to 1e-14 over all 131
 iterations.
@@ -112,7 +119,27 @@ docs/      development log
 
 ## Credits
 
-SDPB (D. Simmons-Duffin, W. Landry, V. Dommes et al.), whose algorithm and file formats this follows;
-`scalar_blocks` and `blocks_3d` (bootstrap collaboration) for conformal blocks; the `stress-tensors-3d`
-pipeline (Chang, Dommes, Erramilli, Homrich, Kravchuk, Liu, Mitchell, Poland, Simmons-Duffin) for the
-stress-tensor system. Mixed Ising system following Kos, Poland, Simmons-Duffin, Vichi (arXiv:1406.4858).
+This is a derivative of SDPB; please cite the SDPB papers if you use it:
+
+* D. Simmons-Duffin, *A Semidefinite Program Solver for the Conformal Bootstrap*, JHEP 06 (2015) 174,
+  [arXiv:1502.02033](https://arxiv.org/abs/1502.02033).
+* W. Landry and D. Simmons-Duffin, *Scaling the semidefinite program solver SDPB*,
+  [arXiv:1909.09745](https://arxiv.org/abs/1909.09745).
+* SDPB repository and documentation (algorithm, `pmp2sdp`, file formats followed here):
+  <https://github.com/davidsd/sdpb> (MIT license).
+
+Also used or followed:
+
+* `scalar_blocks` and `blocks_3d` (bootstrap collaboration) for conformal blocks:
+  <https://gitlab.com/bootstrapcollaboration/scalar_blocks>, <https://gitlab.com/bootstrapcollaboration/blocks_3d>
+  (R. Erramilli, L. Iliesiu, P. Kravchuk, W. Landry, D. Poland, D. Simmons-Duffin, *blocks_3d: Software for
+  general 3d conformal blocks*, [arXiv:2011.01959](https://arxiv.org/abs/2011.01959)).
+* The mixed sigma-epsilon Ising system: F. Kos, D. Poland, D. Simmons-Duffin, *Bootstrapping mixed
+  correlators in the 3D Ising model*, [arXiv:1406.4858](https://arxiv.org/abs/1406.4858).
+* The stress-tensor system and its pipeline: C.-H. Chang, V. Dommes, R. Erramilli, A. Homrich, P. Kravchuk,
+  A. Liu, M. Mitchell, D. Poland, D. Simmons-Duffin, *Bootstrapping the 3d Ising stress tensor*;
+  code at <https://gitlab.com/davidsd/stress-tensors-3d>.
+
+## License
+
+MIT (see [LICENSE](LICENSE)), like SDPB.

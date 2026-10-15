@@ -1,5 +1,5 @@
 """Grid scan of the mixed sigma/eps Ising feasibility problem with the GPU solver.
-Rows of constant delta = Ds - De share block tables (as in KPSV fig. 5).
+Rows of constant delta = Ds - De share block tables (as in KPS fig. 5).
 usage: python tools/scan_mixed.py --nmax 6 --deltas -0.885,-0.895 --ds 0.516:0.523:0.001 --out results/scan.csv"""
 import argparse, os, subprocess, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.dirname(HERE)

@@ -36,7 +36,7 @@ python -m sdpvibe -s runs/ising/sdp --precision 768 --findPrimalFeasible --findD
 
 ## 3. Mixed (sigma, epsilon) Ising island
 
-`tools/ising_mixed_pmp.py` builds the KPSV system (arXiv:1406.4858; note the (-1)^l sign of the V_- vectors
+`tools/ising_mixed_pmp.py` builds the KPS system (arXiv:1406.4858; note the (-1)^l sign of the V_- vectors
 in the scalar_blocks conventions), with gaps Delta_sigma' , Delta_epsilon' >= 3:
 
 ```bash

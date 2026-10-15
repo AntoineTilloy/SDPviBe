@@ -13,8 +13,8 @@ Block conventions (scalar_blocks): checked in tools/ising_pmp.py and against exa
 Sign convention: scalar_blocks' blocks are positive at the crossing point for all spins (Dolan-Osborn
 k-functions without the (-1/2)^l factor).  In that normalisation the s-channel coefficients of
 <s e s e> are (-1)^l lambda_{seO}^2 (check: leading-twist GFF expansion of u^{(Ds+De)/2} gives a
-negative spin-1 coefficient), whereas KPSV's normalisation has them positive.  Hence the vector
-used here is (-1)^l times KPSV's V_-.  Verified: reproduces the nmax=6 island of KPSV fig. 4.
+negative spin-1 coefficient), whereas KPS's normalisation has them positive.  Hence the vector
+used here is (-1)^l times KPS's V_-.  Verified: reproduces the nmax=6 island of KPS fig. 4.
 
 usage: python3 tools/ising_mixed_pmp.py --nmax 6 --ds 0.5181 --de 1.4126 --out pmp.json
 """
