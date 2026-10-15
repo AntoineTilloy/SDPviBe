@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sdpvibe"
+version = "0.1.0"
+description = "SDPB's semidefinite solver for the conformal bootstrap on GPUs (exact multiprecision on INT8 tensor cores)"
+readme = "README.md"
+requires-python = ">=3.10"
+# cupy must match the CUDA version: pip install cupy-cuda12x  or  cupy-cuda13x
+dependencies = ["torch", "triton", "numpy", "mpmath"]
+
+[tool.setuptools]
+packages = ["sdpvibe"]

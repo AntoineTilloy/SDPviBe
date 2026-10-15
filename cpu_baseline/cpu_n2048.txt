@@ -1,0 +1,5 @@
+prec=1024 n=2048 nrhs=2048 threads=16
+  cholesky   53.706 s    26.66 M mp-MAC/s
+  trsm      153.337 s    28.01 M mp-MAC/s
+  gemm      383.522 s    22.40 M mp-MAC/s
+  check L[n-1][n-1]=3.095079e+02  P[n-1][0]=-4.839551e-02
