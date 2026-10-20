@@ -136,10 +136,11 @@ LMAX_WIDE = 160
 
 
 def _mod(L):
-    if L not in _mods:
+    key = (L, torch.cuda.current_device())
+    if key not in _mods:
         src = _SRC.replace("__L__", str(L)).replace("__LMAX__", str(LMAX_WIDE))
-        _mods[L] = cp.RawModule(code=src, options=("-std=c++17",))
-    return _mods[L]
+        _mods[key] = cp.RawModule(code=src, options=("-std=c++17",))
+    return _mods[key]
 
 
 def _launch(L, name, n, *args):

@@ -249,7 +249,7 @@ _mods = {}
 
 
 def _module(WL, LF, BT):
-    key = (WL, LF, BT)
+    key = (WL, LF, BT, torch.cuda.current_device())
     if key not in _mods:
         src = _SRC.replace("__WL__", str(WL)).replace("__LF__", str(LF)).replace("__BT__", str(BT))
         _mods[key] = cp.RawModule(code=src, options=("-std=c++17", "--device-int128"))

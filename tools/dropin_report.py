@@ -31,8 +31,8 @@ def main(work):
         per = [min(dig(x[k], y[k]) for k in KEYS) for x, y in zip(a, b)]
         per_s = sorted(per)
         N = None
-        try: N = len(json.load(open(os.path.join(W, "sdp", "objectives.json")))["b"])
-        except OSError: pass
+        try: N = int(open(os.path.join(W, "out_sdpb", "y.txt")).readline().split()[0])
+        except (OSError, ValueError, IndexError): pass
         sp = r.get("spectrum", {})
         sps = f"{sp.get('zeros')} zeros, {sp.get('zeros_digits')} digits" if "zeros" in sp else "-"
         print(f"| {name} | {N} | {r['reason_sdpb']} ({'yes' if r['same_reason'] else 'NO'}) | {r['iterations_sdpb']} / "

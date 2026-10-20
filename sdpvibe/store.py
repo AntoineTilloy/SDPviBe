@@ -121,3 +121,34 @@ class Store:
 
     def drop(self, key):
         self.dev.pop(key, None); self.pending.pop(key, None)
+
+
+class MultiStore:
+    """one Store per GPU; keys (name, chunk) are routed to the store of the chunk's device
+    (dev_of[chunk]).  Each Store is only used from its device's thread."""
+    def __init__(self, host_keys, dev_of, devices):
+        self.dev_of = dev_of
+        self.stores = {}
+        for d in devices:
+            with torch.cuda.device(d):
+                self.stores[d] = Store({k for k in host_keys if dev_of[k[1]] == d})
+
+    def of(self, key): return self.stores[self.dev_of[key[1]]]
+    def is_host(self, key): return self.of(key).is_host(key)
+    def put(self, key, obj): self.of(key).put(key, obj)
+    def get(self, key): return self.of(key).get(key)
+    def prefetch(self, key): self.of(key).prefetch(key)
+    def drop(self, key): self.of(key).drop(key)
+
+    def stream(self, items, nxt=()):
+        """single device only (all keys on one store)"""
+        items = [tuple(it) for it in items]
+        if not items: return iter(())
+        return self.of(items[0][0]).stream(items, nxt)
+
+    @property
+    def bytes_h2d(self): return sum(s.bytes_h2d for s in self.stores.values())
+    @property
+    def bytes_d2h(self): return sum(s.bytes_d2h for s in self.stores.values())
+    @property
+    def host_bytes(self): return sum(s.host_bytes for s in self.stores.values())

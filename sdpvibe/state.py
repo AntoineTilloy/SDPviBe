@@ -44,23 +44,24 @@ def get_state(solver):
     st = {"y": _cpu(solver.y), "x": [None] * sdp.nblocks, "X": [None] * sdp.nblocks, "Y": [None] * sdp.nblocks}
     upd = solver._pending_update
     for gi, g in enumerate(sdp.groups):
-        xs = ST.get(("xs", gi))
-        if upd is not None:
-            aP, aD = upd; dc = ST.get(("dc", gi))
-            xs = dict(x=add(xs["x"], mul(dc["dx"], aP)), X=[add(X, mul(d, aP)) for X, d in zip(xs["X"], dc["dX"])],
-                      Y=[add(Y, mul(d, aD)) for Y, d in zip(xs["Y"], dc["dY"])])
-        x = _cpu(xs["x"]); X = _cpu(xs["X"][0]); Y = _cpu(xs["Y"][0])
-        for q, j in enumerate(g.idx):
-            dim, K_j, hs = _block_shapes(sdp, j)
-            ix = _x_index(g, K_j)
-            st["x"][j] = MPF(x.m[:, q, ix].contiguous(), x.e[q, ix].contiguous())
-            Xs, Ys = [], []
-            for p in (0, 1):
-                z = p * g.nb + q
-                ii = _X_index(g, hs[p])
-                Xs.append(MPF(X.m[:, z][:, ii][:, :, ii].contiguous(), X.e[z][ii][:, ii].contiguous()))
-                Ys.append(MPF(Y.m[:, z][:, ii][:, :, ii].contiguous(), Y.e[z][ii][:, ii].contiguous()))
-            st["X"][j] = Xs; st["Y"][j] = Ys
+        with torch.cuda.device(g.dev):
+            xs = ST.get(("xs", gi))
+            if upd is not None:
+                aP, aD = (solver._to(u, g.dev) for u in upd); dc = ST.get(("dc", gi))
+                xs = dict(x=add(xs["x"], mul(dc["dx"], aP)), X=[add(X, mul(d, aP)) for X, d in zip(xs["X"], dc["dX"])],
+                          Y=[add(Y, mul(d, aD)) for Y, d in zip(xs["Y"], dc["dY"])])
+            x = _cpu(xs["x"]); X = _cpu(xs["X"][0]); Y = _cpu(xs["Y"][0])
+            for q, j in enumerate(g.idx):
+                dim, K_j, hs = _block_shapes(sdp, j)
+                ix = _x_index(g, K_j)
+                st["x"][j] = MPF(x.m[:, q, ix].contiguous(), x.e[q, ix].contiguous())
+                Xs, Ys = [], []
+                for p in (0, 1):
+                    z = p * g.nb + q
+                    ii = _X_index(g, hs[p])
+                    Xs.append(MPF(X.m[:, z][:, ii][:, :, ii].contiguous(), X.e[z][ii][:, ii].contiguous()))
+                    Ys.append(MPF(Y.m[:, z][:, ii][:, :, ii].contiguous(), Y.e[z][ii][:, ii].contiguous()))
+                st["X"][j] = Xs; st["Y"][j] = Ys
     return st
 
 
@@ -85,27 +86,28 @@ def set_state(solver, st):
     if solver.y.shape != (sdp.N, 1):
         raise ValueError(f"checkpoint y has shape {solver.y.shape}, the SDP has N={sdp.N}")
     for gi, g in enumerate(sdp.groups):
-        xs = ST.get(("xs", gi))
-        x = xs["x"].clone(); X = xs["X"][0].clone(); Y = xs["Y"][0].clone()
-        for q, j in enumerate(g.idx):
-            dim, K_j, hs = _block_shapes(sdp, j)
-            ix = _x_index(g, K_j).to(x.e.device)
-            v = _to_dev_L(st["x"][j], L).reshape(-1)
-            if v.shape[0] != len(ix):
-                raise ValueError(f"checkpoint x_{j} has {v.shape[0]} entries, expected {len(ix)}")
-            x.m[:, q, ix, 0] = v.m; x.e[q, ix, 0] = v.e
-            for p in (0, 1):
-                z = p * g.nb + q
-                ii = _X_index(g, hs[p]).to(x.e.device)
-                for M, src in ((X, st["X"][j][p]), (Y, st["Y"][j][p])):
-                    s = _to_dev_L(src, L)
-                    if s.shape != (len(ii), len(ii)):
-                        raise ValueError(f"checkpoint matrix block {2 * j + p} has shape {s.shape}, expected {len(ii)}")
-                    if len(ii):
-                        sub_m = M.m[:, z]; sub_e = M.e[z]
-                        sub_m[:, ii[:, None], ii[None, :]] = s.m
-                        sub_e[ii[:, None], ii[None, :]] = s.e
-        ST.put(("xs", gi), dict(x=x, X=[X], Y=[Y]))
+        with torch.cuda.device(g.dev):
+            xs = ST.get(("xs", gi))
+            x = xs["x"].clone(); X = xs["X"][0].clone(); Y = xs["Y"][0].clone()
+            for q, j in enumerate(g.idx):
+                dim, K_j, hs = _block_shapes(sdp, j)
+                ix = _x_index(g, K_j).to(x.e.device)
+                v = _to_dev_L(st["x"][j], L).reshape(-1)
+                if v.shape[0] != len(ix):
+                    raise ValueError(f"checkpoint x_{j} has {v.shape[0]} entries, expected {len(ix)}")
+                x.m[:, q, ix, 0] = v.m; x.e[q, ix, 0] = v.e
+                for p in (0, 1):
+                    z = p * g.nb + q
+                    ii = _X_index(g, hs[p]).to(x.e.device)
+                    for M, src in ((X, st["X"][j][p]), (Y, st["Y"][j][p])):
+                        s = _to_dev_L(src, L)
+                        if s.shape != (len(ii), len(ii)):
+                            raise ValueError(f"checkpoint matrix block {2 * j + p} has shape {s.shape}, expected {len(ii)}")
+                        if len(ii):
+                            sub_m = M.m[:, z]; sub_e = M.e[z]
+                            sub_m[:, ii[:, None], ii[None, :]] = s.m
+                            sub_e[ii[:, None], ii[None, :]] = s.e
+            ST.put(("xs", gi), dict(x=x, X=[X], Y=[Y]))
 
 
 def c_minus_By_blocks(solver):

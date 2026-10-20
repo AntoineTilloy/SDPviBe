@@ -144,18 +144,19 @@ def _crt_carry_kernel(ZHT, ZLT, Kk, Md, OUTW, BITLEN, B, W: tl.constexpr, BB: tl
 
 
 # ------------------------------------------------------------------ error flags
-ERR = None        # device-side overflow flag (int32 (1,), set by kernels; checked by check_errors())
+ERR = {}          # device -> overflow flag (int32 (1,), set by kernels; checked by check_errors())
 
 
 def _errbuf():
-    global ERR
-    if ERR is None: ERR = torch.zeros((1,), dtype=torch.int32, device=dev)
-    return ERR
+    d = torch.cuda.current_device()
+    if d not in ERR: ERR[d] = torch.zeros((1,), dtype=torch.int32, device=dev)
+    return ERR[d]
 
 
 def check_errors():
-    if ERR is not None and int(ERR[0]):
-        ERR.zero_()
+    e = ERR.get(torch.cuda.current_device())
+    if e is not None and int(e[0]):
+        e.zero_()
         raise OverflowError("a rounding step overflowed its limb budget")
 
 

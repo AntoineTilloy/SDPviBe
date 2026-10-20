@@ -141,7 +141,7 @@ def main():
             r.update(compare(os.path.join(W, "out_sdpb"), os.path.join(W, "out_sdpvibe")))
             if a.spectrum and os.path.exists(os.path.join(sdp, "pmp_info.json")):
                 for tag in ("sdpb", "sdpvibe"):
-                    run(f"{a.spectrum} --pmpInfo={sdp}/pmp_info.json --solution={W}/out_{tag} --precision={prec} "
+                    run(f"{a.spectrum} --pmpInfo={sdp}/pmp_info.json --solution={W}/out_{tag} --precision={prec} --threshold=1e-30 "
                         f"--output={W}/spectrum_{tag}.json", os.path.join(W, f"spectrum_{tag}.log"))
                 r["spectrum"] = spectrum_compare(os.path.join(W, "spectrum_sdpb.json"), os.path.join(W, "spectrum_sdpvibe.json"))
         report["cases"][name] = r

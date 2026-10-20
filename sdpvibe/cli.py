@@ -7,7 +7,8 @@ a checkpoint in the initial checkpoint directory (default CK) is loaded if prese
 checkpoints are written every --checkpointInterval seconds and at the end (unless --noFinalCheckpoint);
 SIGTERM stops at the start of the next iteration, saves a checkpoint and the solution, and exits with code 15.
 Options that only concern SDPB's MPI parallelisation (--procsPerNode, --procGranularity, --maxSharedMemory,
---maxMemory) are accepted and ignored.  GPU memory: see README (SDPB_GPU_MEM_GB etc.).
+--maxMemory) are accepted and ignored.  Extension: --gpus N | i,j,... | all (multi-GPU; default: env
+SDPVIBE_GPUS, else one GPU).  GPU memory: see README (SDPB_GPU_MEM_GB etc.).
 """
 import datetime, os, signal, sys, time
 import mpmath as mp
@@ -21,6 +22,7 @@ OPTIONS = {
     "checkpointDir": (None, "path"), "initialCheckpointDir": (None, "path"),
     "noFinalCheckpoint": (False, "bool"), "writeSolution": ("x,y", "str"), "verbosity": ("1", "str"),
     "procsPerNode": (None, "str"), "procGranularity": ("1", "str"), "maxSharedMemory": ("0", "str"), "maxMemory": ("0", "str"),
+    "gpus": (None, "str"),                     # SDPviBe: GPUs to use, "2" / "0,1" / "all" (default SDPVIBE_GPUS, else 1)
     "precision": ("400", "int"),
     "findPrimalFeasible": (False, "bool"), "findDualFeasible": (False, "bool"),
     "detectPrimalFeasibleJump": (False, "bool"), "detectDualFeasibleJump": (False, "bool"),
@@ -168,7 +170,7 @@ def main(argv=None):
         print(f'SDP directory   : "{os.path.abspath(params["sdpDir"])}"')
         print(f'out directory   : "{os.path.abspath(out_dir)}"\n')
         print_parameters(params)
-    sdp = SDP(params["sdpDir"], L)
+    sdp = SDP(params["sdpDir"], L, devices=params.get("gpus"))
     if verb >= 1:
         print(f"Initialize SDP solver\n\tprimal dimension: {sum(b['K'] * b['dim'] * (b['dim'] + 1) // 2 for b in sdp.layout.blocks)}"
               f"\n\tdual dimension: {sdp.N}\n\tSDP blocks: {sdp.nblocks}")

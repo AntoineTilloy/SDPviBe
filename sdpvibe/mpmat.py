@@ -161,8 +161,9 @@ _ctx = {}
 
 
 def ctx(L):
-    if L not in _ctx: _ctx[L] = RNS(L)
-    return _ctx[L]
+    key = (L, torch.cuda.current_device())                      # tensors live on the device (multi-GPU)
+    if key not in _ctx: _ctx[key] = RNS(L)
+    return _ctx[key]
 
 
 def gemm_nt(A, Bt, out_exp="col", kc=4096, colblock=None, bt_rowexp=None):
