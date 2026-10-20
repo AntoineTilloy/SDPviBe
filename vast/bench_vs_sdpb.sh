@@ -24,7 +24,7 @@ for n in ${SIZES:-6 8 10}; do
     ( time python3 tools/synth_sdp.py --nmax $n --precision $PREC --out $D ) > results/synth_n$n.log 2>&1 || { log "FAILED synth n$n: $(tail -3 results/synth_n$n.log | tr '\n' ' ')"; continue; }
     log "$(head -1 results/synth_n$n.log)"
     its=${SDPB_ITS:-3}
-    ( time timeout 7200 $MPI --bind-to core $R/usr/local/bin/sdpb -s $D --precision $PREC --maxIterations $its -o $D.sdpb \
+    ( time timeout 7200 $MPI --bind-to core $R/usr/local/bin/sdpb -s $D --precision $PREC --maxIterations $its -o $D.sdpb --maxSharedMemory ${SDPB_MSM:-16G} \
         -c $D.sdpb.ck --noFinalCheckpoint --verbosity 1 ) > results/n${n}_sdpb.log 2>&1
     log "n$n SDPB ($(nproc) threads): $(mt $D.sdpb/iterations.json); $(grep real results/n${n}_sdpb.log)"
     ( time timeout 7200 bin/sdpb -s $D --precision $PREC --maxIterations $((its + 1)) -o $D.gpu -c $D.gpu.ck --noFinalCheckpoint ) > results/n${n}_gpu.log 2>&1
