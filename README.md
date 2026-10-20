@@ -76,6 +76,16 @@ Per iteration, against official SDPB on 56-64 cores (AMD EPYC):
 | mixed Ising nmax=18 (N=854, 1086 bits) | 36.68 s (64 cores) | 2.03 s (18x) |
 | stress-tensor system nmax=6 (N=742, 5x5 blocks) | 65.5 s (64 cores) | 3.8 s (17x; 129.5 min vs 8.4 min end to end) |
 
+One RTX 3090 (24 GB, a ~$0.35/h rental) against SDPB on the same box's 64 cores (EPYC), synthetic SDPs
+with the stress-tensor system's block structure (`tools/synth_sdp.py`, 832 bits, identical files for both;
+iterates agree to 1e-15):
+
+| nmax~ | N | SDP size | SDPB s/it | SDPviBe s/it | speedup |
+|---|---|---|---|---|---|
+| 6  | 742  | 1.8 GB  | 127 | 6.97 | 18x |
+| 8  | 1319 | 5.9 GB  | 351 | 17.5 | 20x |
+| 10 | 2061 | 14.7 GB | 968 | 37.6 | 26x |
+
 Streaming (synthetic SDPs with the stress-tensor system's block structure, scaled up; RTX PRO 6000 with
 96 GB, PCIe 5; "32 GB" is a hard cap emulating an RTX 5090):
 
