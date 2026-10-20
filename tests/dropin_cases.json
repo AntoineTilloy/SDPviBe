@@ -1,0 +1,13 @@
+[
+ {"name": "example", "pmp": "testdata/example_pmp.json", "precision": 768, "options": ""},
+ {"name": "ising_n6_allowed", "pmp": "testdata/ising_n6_de1.3.json", "precision": 768, "options": "--findPrimalFeasible --findDualFeasible"},
+ {"name": "ising_n6_excluded", "pmp": "testdata/ising_n6_de1.6.json", "precision": 768, "options": "--findPrimalFeasible --findDualFeasible"},
+ {"name": "ising_n10_allowed", "pmp": "testdata/ising_n10_de1.41.json", "precision": 768, "options": "--findPrimalFeasible --findDualFeasible"},
+ {"name": "ising_n10_excluded", "pmp": "testdata/ising_n10_de1.42.json", "precision": 768, "options": "--findPrimalFeasible --findDualFeasible"},
+ {"name": "mixed_n6_in", "pmp": "testdata/mixed_n6_in.json", "precision": 768, "features": true,
+  "options": "--findPrimalFeasible --findDualFeasible --detectPrimalFeasibleJump --detectDualFeasibleJump"},
+ {"name": "mixed_n6_out", "pmp": "testdata/mixed_n6_0.525_1.4195.json", "precision": 768,
+  "options": "--findPrimalFeasible --findDualFeasible --detectPrimalFeasibleJump --detectDualFeasibleJump"},
+ {"name": "mixed_n10_ising", "pmp": "testdata/mixed_n10_ising.json", "precision": 768,
+  "options": "--findPrimalFeasible --findDualFeasible --detectPrimalFeasibleJump --detectDualFeasibleJump"}
+]

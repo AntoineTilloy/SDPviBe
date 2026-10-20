@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Drop-in replacement for SDPB's `sdpb` executable: same command line, files and outputs.
+# Point tools that call sdpb (e.g. hyperion's sdpb.sh) at this script. Runs on one GPU (CUDA_VISIBLE_DEVICES).
+# MPI launchers (mpirun -n N ...) are not needed: if this script is started under one, only rank 0 works.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -n "${OMPI_COMM_WORLD_RANK:-${PMI_RANK:-${SLURM_PROCID:-}}}" ] && [ "${OMPI_COMM_WORLD_RANK:-${PMI_RANK:-${SLURM_PROCID:-0}}}" != 0 ]; then
+    exit 0
+fi
+exec "${SDPVIBE_PYTHON:-python3}" -c "import sys; sys.path.insert(0, '$HERE'); import runpy; sys.argv[0] = 'sdpb'; runpy.run_module('sdpvibe', run_name='__main__')" "$@"

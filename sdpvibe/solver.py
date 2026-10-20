@@ -11,7 +11,7 @@ Blocks are processed in batched groups: all blocks of a group are zero-padded to
 (points K, bilinear basis sizes h).  Padding is inert: padded rows/cols of X, Y are kept at the
 identity, padded Schur rows at the identity, and residues / R / dY are masked to zero there.
 """
-import json, os, pickle, time
+import json, os, pickle, sys, time
 import mpmath as mp
 import numpy as np
 import torch
@@ -137,30 +137,27 @@ _PARSE = None
 
 
 def _parse_block(j):
-    """worker: read block j of the SDP directory and convert all numbers on the CPU"""
+    """worker: read block j of the SDP (JSON or binary) and convert all numbers on the CPU"""
+    from .sdp_io import SdpSource, read_block
     path, L = _PARSE
-    rd = lambda f: json.load(open(os.path.join(path, f)))
-    info = rd(f"block_info_{j}.json"); data = rd(f"block_data_{j}.json")
-    out = {"dim": info["dim"], "K": info["num_points"]}
-    for key in ("bilinear_bases_even", "bilinear_bases_odd"):
-        rows = data[key]
-        out[key] = (len(rows), F.strings_to_host([x for r in rows for x in r], L) if rows else None)
-    out["c"] = F.strings_to_host(data["c"], L)
-    out["B"] = F.strings_to_host([x for r in data["B"] for x in r], L)
-    return out
+    return read_block(SdpSource(path), j, L)
 
 
 def _gb(x): return x / 2 ** 30
 
 
 def load_raw(path, L, workers=None, nblocks=None):
-    """parse all blocks of a pmp2sdp JSON directory on the CPU (parallel), cached as
-    <path>/sdpvibe_raw_L<L>.pkl (python -m sdpvibe.prepare builds the cache ahead of time)"""
+    """parse all blocks of an SDP (pmp2sdp output: directory or archive, JSON or binary blocks) on the
+    CPU in parallel, cached as sdpvibe_raw_L<L>.pkl in the SDP directory (next to an archive)
+    (python -m sdpvibe.prepare builds the cache ahead of time)"""
+    from .sdp_io import SdpSource
     t0 = time.time()
+    src = SdpSource(path)
     if nblocks is None:
-        nblocks = json.load(open(os.path.join(path, "control.json")))["num_blocks"]
-    cache = os.path.join(path, f"sdpvibe_raw_L{L}.pkl")
-    if os.path.exists(cache) and os.path.getmtime(cache) > os.path.getmtime(os.path.join(path, "control.json")):
+        nblocks = src.json("control.json")["num_blocks"]
+    cdir = src.cache_dir()
+    cache = os.path.join(cdir, f"sdpvibe_raw_L{L}.pkl")
+    if os.path.exists(cache) and os.path.getmtime(cache) > src.mtime():
         with open(cache, "rb") as f: raw = pickle.load(f)
         return raw, f"raw cache {time.time() - t0:.1f}s"
     global _PARSE
@@ -172,11 +169,14 @@ def load_raw(path, L, workers=None, nblocks=None):
             raw = pool.map(_parse_block, range(nblocks), chunksize=1)
     else:
         raw = [_parse_block(j) for j in range(nblocks)]
-    info = f"parse {time.time() - t0:.1f}s ({nw} workers)"
-    try:
-        with open(cache, "wb") as f: pickle.dump(raw, f, protocol=5)
-    except OSError:
-        pass
+    fmt = "binary" if "precision" in raw[0] else "json"
+    info = f"parse {fmt} {time.time() - t0:.1f}s ({nw} workers)"
+    if os.environ.get("SDPVIBE_NO_CACHE") != "1":
+        try:
+            os.makedirs(cdir, exist_ok=True)
+            with open(cache, "wb") as f: pickle.dump(raw, f, protocol=5)
+        except OSError:
+            pass
     return raw, info
 
 
@@ -197,9 +197,20 @@ class Layout:
     def __init__(self, blocks, N, L, budget=None, chunk=None, stream=None):
         E = self.E = 4 * L + 8
         self.N, self.L = N, L
-        if budget is None:
+        self.deterministic = True
+        if budget is None and not float(os.environ.get("SDPB_GPU_MEM_GB", 0)):
+            # The layout (chunking) changes rounding, so it must not depend on momentary free memory:
+            # plan for the card (total minus a fixed reserve for the CUDA context and fragmentation),
+            # unless other processes hold so much memory that this plan would not fit.
             free, total = torch.cuda.mem_get_info()
-            budget = free + torch.cuda.memory_reserved()
+            budget = total - max(1.5 * 2 ** 30, 0.08 * total)
+            avail = free + torch.cuda.memory_reserved()
+            if avail < budget:
+                print(f"sdpvibe: warning: only {avail / 2**30:.1f} of {total / 2**30:.1f} GB GPU memory free (other processes); "
+                      f"the memory plan, hence the rounding, depends on it (set SDPB_GPU_MEM_GB for reproducible runs)",
+                      file=sys.stderr)
+                budget = avail
+                self.deterministic = False
         cap = float(os.environ.get("SDPB_GPU_MEM_GB", 0)) * 2 ** 30
         if cap:                                  # emulate a smaller GPU: plan for it and enforce it
             budget = cap
@@ -308,13 +319,16 @@ class SDP:
     large arrays go to self.store (GPU or pinned host memory)."""
 
     def __init__(self, path, L, workers=None, budget=None, chunk=None, stream=None):
+        from .sdp_io import SdpSource, read_objectives, read_normalization
         mp.mp.prec = F.NBITS(L) + 64
         t0 = time.time()
-        rd = lambda f: json.load(open(os.path.join(path, f)))
-        nblocks = rd("control.json")["num_blocks"]
-        obj = rd("objectives.json")
-        const = mp.mpf(obj.get("constant", "0"))
-        b = F.from_strings(obj["b"], L, (len(obj["b"]), 1))
+        src = SdpSource(path)
+        nblocks = src.json("control.json")["num_blocks"]
+        const_s, b_s = read_objectives(src)
+        obj = {"b": b_s}
+        const = mp.mpf(const_s)
+        b = F.from_strings(b_s, L, (len(b_s), 1))
+        self.normalization = read_normalization(src)
         raw, info = load_raw(path, L, workers, nblocks)
         blocks = [dict(dim=r["dim"], K=r["K"], he=r["bilinear_bases_even"][0], ho=r["bilinear_bases_odd"][0]) for r in raw]
 
@@ -399,9 +413,42 @@ DEFAULTS = dict(maxIterations=500, findPrimalFeasible=False, findDualFeasible=Fa
                 stepLengthReduction="0.7", maxComplementarity="1e100", minPrimalStep="0", minDualStep="0")
 
 
+def fmt_big(v, digits):
+    """a number as SDPB prints a BigFloat: like C++ defaultfloat (%g) with `digits` significant digits"""
+    v = mp.mpf(v)
+    if v == 0: return "0"
+    s = mp.nstr(v, digits, min_fixed=-5, max_fixed=digits, strip_zeros=True)
+    mant, _, ex = s.partition("e")
+    if mant.endswith(".0"): mant = mant[:-2]                      # %g prints 1, not 1.0
+    s = mant + ("e" + ex if ex else "")
+    if "e" in s:                                                  # C++: e+40 / e-31, at least two digits
+        mant, ex = s.split("e"); sign = "-" if ex.startswith("-") else "+"
+        ex = ex.lstrip("+-").lstrip("0") or "0"
+        s = f"{mant}e{sign}{ex.zfill(2)}"
+    return s
+
+
+def chol_log2_cond(ch, mask=None):
+    """per block log2 of SDPB's Cholesky condition number estimate (max/min diagonal of L)^2;
+    mask (nb, n): rows that count (padding excluded)"""
+    n = ch.n; L = ch.L
+    idx = torch.arange(n, device=dev)
+    d = ch.Lt.limbs[:, :, idx, idx]                               # (L, nb, n) fixed point, > 0
+    top = d[-1].double() * 2.0 ** 32 + (d[-2].double() % 2.0 ** 32) if L > 1 else d[-1].double()
+    lg = torch.log2(torch.clamp(top, min=1e-300)) + (ch.Lt.exp + 32 * (L - 2)) + ch.k.double()
+    if mask is None: mask = torch.ones_like(lg, dtype=torch.bool)
+    hi = torch.where(mask, lg, torch.full_like(lg, -1e300)).amax(1)
+    lo = torch.where(mask, lg, torch.full_like(lg, 1e300)).amin(1)
+    return torch.where(mask.any(1), 2 * (hi - lo), torch.zeros_like(hi))
+
+
 class Solver:
-    def __init__(self, sdp, L, **params):
+    def __init__(self, sdp, L, precision=None, **params):
         self.sdp, self.L = sdp, L
+        self.precision = precision or (32 * (L - 1) - 2)
+        self.digits = int(mp.ceil(self.precision * mp.log10(2))) + 1  # SDPB's set_stream_precision
+        self._pending_update = None
+        self.c_minus_By = [None] * len(sdp.groups)
         p = dict(DEFAULTS); p.update(params)
         self.p = {k: (mp.mpf(v) if isinstance(v, str) else v) for k, v in p.items()}
         self.S = lambda v: F.scalar(v, L)
@@ -469,7 +516,11 @@ class Solver:
             put(v, off, 0, fold(d, g.nb))
         return v
 
-    def run(self, max_iter=None, log=None, verbose=True):
+    def run(self, max_iter=None, log=None, verbose=True, on_iteration=None, max_runtime=None,
+            checkpoint=None, checkpoint_interval=None, stop=None):
+        """max_runtime (s): SDPB's maxRuntime; checkpoint(solver) is called at the start of an iteration
+        when checkpoint_interval seconds have passed since the last one; stop() -> True ends the run
+        with SDPB's 'SIGTERM signal received'; on_iteration(row) gets SDPB's iterations.json record."""
         """SDPB's iteration, chunk-major: every pass loops over the chunks and fetches the chunk's
         arrays from the store (GPU-resident or streamed).  Per-chunk store items:
           B (Pm)  constant / L_S^-1 B      V    bilinear bases (V, Vx)      xs   x, X, Y
@@ -502,10 +553,30 @@ class Solver:
         D2 = ("xs", "ch", "res", "V", "dir", "cholS", PM)
 
         mk2 = lambda g, b: g.Xmask[b][:, :, None] & g.Xmask[b][:, None, :]
-        update = None                                                     # (aP, aD) for the dc items
+        update = self._pending_update                                     # (aP, aD) for the dc items
+        last_ck = time.time()
+        pobj = dobj = gap = primal_err = dual_err = mp.mpf(0)
+        fmt = lambda v: fmt_big(v, self.digits)
+
+        def result(reason, iterations):
+            return dict(terminateReason=reason, primalObjective=pobj, dualObjective=dobj, dualityGap=gap,
+                        primalError=primal_err, dualError=dual_err, iterations=iterations, time=time.time() - t0)
+
         while True:
             it += 1
             ti = time.time()
+            if stop is not None and stop():
+                self.result = result("SIGTERM signal received", it - 1)
+                break
+            if checkpoint is not None and checkpoint_interval is not None and time.time() - last_ck >= checkpoint_interval:
+                self._pending_update = update
+                checkpoint(self)
+                last_ck = time.time()
+            cond = [mp.mpf(0), ""]                                        # max block condition number, name
+
+            def upd_cond(lg2, name):
+                if lg2 > float(mp.log(cond[0], 2) if cond[0] > 0 else -1):
+                    cond[0] = mp.mpf(2) ** mp.mpf(lg2); cond[1] = name
             if it == 2: TM("residues"); TM.restart(2)
             TM("residues")
             dobj = sdp.const + dot(sdp.b, self.y)
@@ -521,12 +592,18 @@ class Solver:
                     ST.drop(("dc", gi)); del dc
                 psum += dot(g.c, xs["x"])
                 cX = [Chol(X) for X in xs["X"]]; cY = [Chol(Y) for Y in xs["Y"]]
+                for tag, chs in (("X", cX), ("Y", cY)):
+                    lg = chol_log2_cond(chs[0], g.Xmask[0]).cpu().tolist()
+                    z = max(range(len(lg)), key=lambda i: lg[i])
+                    upd_cond(lg[z], f"{tag}_cholesky.block_{g.idx[z % g.nb]}_{z // g.nb}")
                 Vs = o["V"]
                 a, y_ = self.pairings(g, Vs, cX, xs["Y"])
                 d = -self.seg_diag(g, y_, [g.K])
                 ST.put(("AXI", gi), a); ST.put(("AY", gi), y_); del a, y_
                 B = o["B"]; del o
-                d = add(d, gemm(B, bexpand(self.y, g.nb)), -1)
+                By = gemm(B, bexpand(self.y, g.nb))
+                self.c_minus_By[gi] = add(g.c, By, -1)
+                d = add(d, By, -1); del By
                 dres = add(d, g.c); del d
                 pvec = add(pvec, gemm(flat_rows(B), flat_rows(xs["x"]), transA=True), -1)
                 del B
@@ -539,7 +616,7 @@ class Solver:
                 ST.put(("xs", gi), xs); ST.put(("ch", gi), dict(X=cX, Y=cY))
                 ST.put(("res", gi), dict(dres=dres, Pres=Pres, mXY=mXY))
                 del xs, cX, cY, dres, Pres, mXY
-            update = None
+            update = None; self._pending_update = None
             pobj = sdp.const + psum
             gap = abs(pobj - dobj) / max(abs(pobj) + abs(dobj), mp.mpf(1))
             primal_err_p = max_abs(pvec)
@@ -553,26 +630,29 @@ class Solver:
             elif alphaD == 1 and p["detectDualFeasibleJump"]: reason = "dual feasible jump detected"
             elif alphaP == 1 and p["detectPrimalFeasibleJump"]: reason = "primal feasible jump detected"
             elif it > (max_iter or p["maxIterations"]): reason = "maxIterations exceeded"
+            elif max_runtime is not None and time.time() - t0 >= max_runtime: reason = "maxRuntime exceeded"
             elif it > 1 and alphaP < p["minPrimalStep"]: reason = "primal step too small"
             elif it > 1 and alphaD < p["minDualStep"]: reason = "dual step too small"
             if reason:
-                self.result = dict(terminateReason=reason, primalObjective=pobj, dualObjective=dobj, dualityGap=gap,
-                                   primalError=primal_err, dualError=dual_err, iterations=it - 1, time=time.time() - t0)
+                self.result = result(reason, it - 1)
                 break
             mu = -musum / sdp.total_psd_rows
             if mu > p["maxComplementarity"]:
-                self.result = dict(terminateReason="maxComplementarity exceeded", iterations=it, time=time.time() - t0)
+                self.result = result("maxComplementarity exceeded", it - 1)
                 break
             muS = self.S(mu)
             # ---- Schur complement, its Cholesky factors, Q = sum P^T P ----
             Q = None
-            QA = F.GramAcc(sdp.N, L) if lean else None                   # chunked: one CRT for all chunks
+            QA = F.GramAcc(sdp.N, L, getattr(self, "_q_ref", None)) if lean else None   # chunked: one CRT
             for gi, g, o in chunks("AXI", "AY", "B", nxt=D1):
                 ST.drop(("AXI", gi)); ST.drop(("AY", gi))
                 TM("schur: assemble S")
                 Sg = self.schur(g, o["AXI"], o["AY"])
                 TM("schur: chol(S)")
                 cs = Chol(Sg); del Sg
+                lg = chol_log2_cond(cs, g.xmask).cpu().tolist()
+                q = max(range(len(lg)), key=lambda i: lg[i])
+                upd_cond(lg[q], f"schur_complement_cholesky.block_{g.idx[q]}")
                 TM("schur: P = L^-1 B")
                 if lean: P = solve_panels(cs, o["B"], sdp.layout.panels)    # columns independent: bounded temporaries
                 else: P = cs.solve_lower(o["B"])
@@ -588,8 +668,13 @@ class Solver:
                 if lean: del P
                 else: ST.put(("Pm", gi), P); del P
             TM("chol(Q)")
-            if lean: Q = QA.result(); self.q_flushes = getattr(self, "q_flushes", 0) + QA.flushes; del QA
+            if lean:
+                Q = QA.result(); self.q_flushes = getattr(self, "q_flushes", 0) + QA.flushes
+                loss = QA.precision_loss()
+                if loss > 28: self.q_lossy = getattr(self, "q_lossy", 0) + 1     # reference > 28 bits above the column max
+                self._q_ref = QA.next_reference(); del QA
             cholQ = Chol(copy_lower_to_upper(Q)); del Q
+            Q_cond = mp.mpf(2) ** mp.mpf(float(chol_log2_cond(cholQ)[0]))
 
             def direction(beta, corr):
                 """predictor (corr=False) or corrector search direction; returns dy and, per chunk, stores
@@ -659,21 +744,27 @@ class Solver:
             TM("update")
             aP, aD = self.S(alphaP), self.S(alphaD)
             update = (aP, aD)                                             # x, X, Y: in the next residue pass
+            self._pending_update = update
             self.y = add(self.y, mul(dy, aD))
             row = dict(iteration=it, total_time=round(time.time() - t0, 3), iter_time=round(time.time() - ti, 3),
-                       mu=mp.nstr(mu, 30), **{"P-obj": mp.nstr(pobj, 30), "D-obj": mp.nstr(dobj, 30), "gap": mp.nstr(gap, 30),
-                       "P-err": mp.nstr(primal_err_P, 30), "p-err": mp.nstr(primal_err_p, 30), "D-err": mp.nstr(dual_err, 30),
-                       "R-err": mp.nstr(R_err, 30), "P-step": mp.nstr(alphaP, 30), "D-step": mp.nstr(alphaD, 30),
-                       "beta": mp.nstr(beta_c, 30)})
+                       mu=fmt(mu), **{"P-obj": fmt(pobj), "D-obj": fmt(dobj), "gap": fmt(gap),
+                       "P-err": fmt(primal_err_P), "p-err": fmt(primal_err_p), "D-err": fmt(dual_err),
+                       "R-err": fmt(R_err), "P-step": fmt(alphaP), "D-step": fmt(alphaD), "beta": fmt(beta_c),
+                       "Q_cond_number": fmt(Q_cond), "max_block_cond_number": fmt(cond[0]), "block_name": cond[1]})
+            self.last_mu, self.last_steps = mu, (alphaP, alphaD, beta_c)
             if log is not None: log.append(row)
+            if on_iteration is not None: on_iteration(row)
             if verbose:
                 f = lambda v: mp.nstr(v, 2, min_fixed=0, max_fixed=0) if v != 0 else "0"
                 print(f"{it:4d} {time.time() - t0:7.1f} {f(mu):>9} {mp.nstr(pobj, 6):>11} {mp.nstr(dobj, 6):>11} {f(gap):>9} "
                       f"{f(primal_err_P):>9} {f(primal_err_p):>9} {f(dual_err):>9} {f(R_err):>9} {mp.nstr(alphaP, 3):>7} "
                       f"{mp.nstr(alphaD, 3):>7} {mp.nstr(beta_c, 3):>6}", flush=True)
         TM.report()
-        if getattr(self, "q_flushes", 0):
+        if getattr(self, "q_flushes", 0) and os.environ.get("SDPB_GPU_TIMING") == "1":
             print(f"note: Q accumulator flushed {self.q_flushes} times (column scale jumps > 2^{F.GramAcc.HEAD} between chunks)")
+        if getattr(self, "q_lossy", 0):
+            print(f"sdpvibe: warning: in {self.q_lossy} iterations a Q column lost more than 28 bits (scale drop between iterations)",
+                  file=sys.stderr)
         return self.result
 
 

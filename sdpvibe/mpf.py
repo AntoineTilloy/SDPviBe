@@ -532,11 +532,14 @@ class GramAcc:
     one GEMM over all rows (normwise per column)."""
     HEAD = 28
 
-    def __init__(self, N, L):
+    def __init__(self, N, L, E_ref=None):
+        """E_ref: initial reference exponents (e.g. last iteration's column maxima + a margin), which
+        avoids flushes when the chunk with the largest entries of a column does not come first"""
         from .mpmat import ctx
         self.N, self.L = N, L
         self.R = ctx(L + 1)
-        self.E = torch.full((N,), EZ, dtype=torch.int64, device=dev)
+        self.E = E_ref.clone() if E_ref is not None else torch.full((N,), EZ, dtype=torch.int64, device=dev)
+        self.Tmax = torch.full((N,), EZ, dtype=torch.int64, device=dev)       # column maxima actually seen
         self.acc = None
         self.part = None                                             # flushed partial sums (MPF)
         self.flushes = 0
@@ -549,6 +552,7 @@ class GramAcc:
         L, N, R = self.L, self.N, self.R
         tp = _top(P).amax(0)                                         # (N,) column tops
         live = tp > EZ // 2
+        self.Tmax = torch.maximum(self.Tmax, tp)
         known = self.E > EZ // 2
         if bool((live & known & (tp > self.E + self.HEAD)).any()):
             self._flush()                                            # new references: max of old and new tops
@@ -599,6 +603,15 @@ class GramAcc:
         q = self._crt()
         self.part = q if self.part is None else add(self.part, q)
         self.acc = None; self.flushes += 1
+
+    def next_reference(self, margin=4):
+        """reference exponents for the next accumulation (columns never seen: none)"""
+        return torch.where(self.Tmax > EZ // 2, self.Tmax + margin, self.Tmax)
+
+    def precision_loss(self):
+        """max over columns of (reference - actual column maximum), in bits"""
+        ok = (self.Tmax > EZ // 2) & (self.E > EZ // 2)
+        return int((self.E - self.Tmax)[ok].max()) if bool(ok.any()) else 0
 
     def result(self):
         if self.acc is None: return self.part
