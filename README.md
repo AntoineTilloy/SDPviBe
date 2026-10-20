@@ -44,6 +44,27 @@ identical to the original solver, streamed runs bitwise identical to resident on
 and a fully streamed real SDP (mixed Ising nmax=10) agrees with the resident run to 1e-14 over all 131
 iterations.
 
+**Drop-in suite** (`tests/dropin_suite.py`: `pmp2sdp`, then `sdpb` and SDPviBe's `bin/sdpb` with identical
+command lines on the same binary SDP, outputs compared file by file; one RTX 3090 vs SDPB on 64 cores):
+
+| case | N | verdict (same for both) | iterations | worst / median digits per iteration | y digits | s/it SDPB | s/it SDPviBe |
+|---|---|---|---|---|---|---|---|
+| SDPB example | 1 | primal-dual optimal | 160 / 160 | 13.8 / 14.6 | 45.2 | 0.026 | 0.107 |
+| Ising nmax=6, allowed | 20 | primal feasible | 28 / 28 | 14.6 / 15.2 | 15.1 | 0.47 | 0.133 |
+| Ising nmax=6, excluded | 20 | dual feasible | 100 / 100 | 13.0 / 14.4 | 13.8 | 0.474 | 0.133 |
+| Ising nmax=10, allowed | 54 | primal feasible | 51 / 51 | 14.5 / 14.9 | 14.8 | 0.837 | 0.156 |
+| Ising nmax=10, excluded | 54 | dual feasible | 106 / 106 | 13.0 / 14.2 | 13.9 | 0.828 | 0.154 |
+| mixed Ising nmax=6, in island | 104 | primal feasible | 61 / 61 | 13.7 / 14.8 | 14.0 | 2.82 | 0.466 |
+| mixed Ising nmax=6, out | 104 | primal feasible | 62 / 62 | 13.3 / 14.7 | 13.6 | 3.13 | 0.464 |
+| mixed Ising nmax=10 | 274 | primal feasible | 131 / 131 | 13.2 / 13.7 | 14.2 | 10.2 | 1.32 |
+
+out.txt, x, z and c_minus_By agree to the same level. Features checked against SDPB: resume from a
+checkpoint (bitwise identical to an uninterrupted run), text checkpoints SDPB -> SDPviBe and SDPviBe -> SDPB
+(same iterations and final objective), zip input (bitwise identical), `--maxRuntime`, SIGTERM (exit 15,
+checkpoint, resume), `--paramFile`. On tiny problems SDPB is faster per iteration (SDPviBe is bound by
+~550 kernel launches per iteration, ~0.1 s); startup with warm kernel caches is ~4 s (the first run on a
+machine compiles kernels, ~40 s).
+
 ## Performance
 
 Per iteration, against official SDPB on 56-64 cores (AMD EPYC):
