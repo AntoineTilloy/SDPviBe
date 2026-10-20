@@ -197,7 +197,9 @@ class Layout:
     def __init__(self, blocks, N, L, budget=None, chunk=None, stream=None, devices=(0,)):
         E = self.E = 4 * L + 8
         self.N, self.L = N, L
-        self.devices = devices = list(devices)
+        self.phys = list(devices)                # slot -> physical CUDA device
+        self.devices = list(range(len(self.phys)))   # device slots (chunks are assigned to slots)
+        devices = self.phys
         self.deterministic = True
         if budget is None and not float(os.environ.get("SDPB_GPU_MEM_GB", 0)):
             # The layout (chunking) changes rounding, so it must not depend on momentary free memory:
@@ -218,7 +220,7 @@ class Layout:
         cap = float(os.environ.get("SDPB_GPU_MEM_GB", 0)) * 2 ** 30
         if cap:                                  # emulate a smaller GPU: plan for it and enforce it
             budget = cap
-            for d in devices:
+            for d in set(devices):
                 torch.cuda.set_per_process_memory_fraction(min(1.0, cap / torch.cuda.get_device_properties(d).total_memory), d)
         chunk = float(os.environ.get("SDPB_GPU_CHUNK_GB", 0)) * 2 ** 30 or chunk
         stream = os.environ.get("SDPB_GPU_STREAM", stream or "auto")      # auto | all | none
@@ -228,6 +230,7 @@ class Layout:
         for d in bydim: bydim[d].sort(key=lambda j: (blocks[j]["K"], max(blocks[j]["he"], blocks[j]["ho"])))
         fixed = self.A_Q * N * N * E + 1.2 * 2 ** 30                     # Q, cholQ; context, GEMM workspace
         # multi-GPU: chunks of at most 1/(2 ndev) of the total work, assigned to devices largest first
+        devices = self.devices
         self.cmax = sum(self.cost(blocks, [j]) for j in range(len(blocks))) / (2 * len(devices)) if len(devices) > 1 else float("inf")
         whole = self._split(blocks, bydim, float("inf")) if len(devices) > 1 else [bydim[d] for d in sorted(bydim)]
         tot = lambda ch: sum(self.persistent(blocks, c) for c in ch) + max(self.ws(blocks, c) for c in ch) if ch else 0
@@ -359,7 +362,10 @@ def _rand_mpf(shape, L, gen, spread=4):
 
 
 def resolve_devices(spec=None):
-    """GPUs to use: a count ("2"), a list ("0,2") or "all"; default SDPVIBE_GPUS, else 1 (GPU 0)"""
+    """GPUs to use: a count ("2"), a list ("0,2") or "all"; default SDPVIBE_GPUS, else 1 (GPU 0).
+    Testing: SDPVIBE_FAKE_GPUS=k runs the multi-GPU code path with k device slots on GPU 0."""
+    fake = int(os.environ.get("SDPVIBE_FAKE_GPUS", 0))
+    if fake > 1: return [torch.cuda.current_device()] * fake
     spec = str(spec or os.environ.get("SDPVIBE_GPUS", "1")).strip()
     n = torch.cuda.device_count()
     if spec == "all": return list(range(n))
@@ -430,12 +436,13 @@ class SDP:
         self.const, self.b, self.N = const, b, b.shape[0]
         N = self.N
         self.layout = layout
-        self.devices = layout.devices; self.dev0 = self.devices[0]
+        self.devices, self.phys = layout.devices, layout.phys        # slots, slot -> CUDA device
+        self.dev0 = 0
         multi = len(self.devices) > 1
-        self.store = MultiStore(layout.host_keys, layout.dev_of, self.devices) if multi else Store(layout.host_keys)
+        self.store = MultiStore(layout.host_keys, layout.dev_of, self.phys) if multi else Store(layout.host_keys)
         self.groups = []
         for gi, c in enumerate(layout.chunks):
-            with torch.cuda.device(layout.dev_of[gi]):
+            with torch.cuda.device(self.phys[layout.dev_of[gi]]):
                 g = Group()
                 g.dev = layout.dev_of[gi]
                 nb, dim, K, h, P = Layout.shape(blocks, c)
@@ -464,7 +471,7 @@ class SDP:
                 self.store.put(("B", gi), B); self.store.put(("V", gi), dict(V=[V], Vx=[Vx])); del B, V, Vx
                 g.psd_rows = int(xm.sum())
                 self.groups.append(g)
-        for d in self.devices: torch.cuda.synchronize(d)
+        for d in set(self.phys): torch.cuda.synchronize(d)
         self.total_psd_rows = sum(g.psd_rows for g in self.groups)
         self.nblocks = len(blocks)
 
@@ -528,7 +535,7 @@ class Solver:
         self.p = {k: (mp.mpf(v) if isinstance(v, str) else v) for k, v in p.items()}
         self.S = lambda v: F.scalar(v, L)
         for gi, g in enumerate(sdp.groups):                          # per-chunk state -> store
-            with torch.cuda.device(g.dev):
+            with torch.cuda.device(sdp.phys[g.dev]):
                 Xg, Yg = [], []
                 for b in range(len(g.h)):
                     n = g.dim * g.h[b]
@@ -609,7 +616,8 @@ class Solver:
     def _to(self, obj, d):
         """obj (tree of CUDA tensors) on device d (no copy if already there)"""
         from .store import tmap
-        return tmap(lambda t: t.to(torch.device("cuda", d)), obj)
+        dv = torch.device("cuda", self.sdp.phys[d])
+        return tmap(lambda t: t.to(dv), obj)
 
     def _bcast(self, obj):
         """{device: obj on that device}"""
@@ -625,7 +633,7 @@ class Solver:
         def work(d):
             mine = sdp.layout.chunks_of[d] if multi else list(range(len(G)))
             if not mine: return
-            with torch.cuda.device(d):
+            with torch.cuda.device(sdp.phys[d]):
                 st = sdp.store.stores[d] if multi else sdp.store
                 items = [tuple((n, gi) for n in names) for gi in mine]
                 for gi, objs in zip(mine, st.stream(items, [(n, mine[0]) for n in nxt])):
@@ -794,7 +802,7 @@ class Solver:
                 # ---- Schur complement, its Cholesky factors, Q = sum P^T P ----
                 QA, Qd = {}, {}
                 for d in devs:
-                    with torch.cuda.device(d):
+                    with torch.cuda.device(sdp.phys[d]):
                         ref = getattr(self, "_q_ref", None)
                         QA[d] = F.GramAcc(sdp.N, L, None if ref is None else self._to(ref, d)) if lean else None   # chunked: one CRT
                         Qd[d] = None
@@ -828,7 +836,7 @@ class Solver:
                     parts = [None] * len(devs)
 
                     def finish(k):
-                        with torch.cuda.device(devs[k]): parts[k] = QA[devs[k]].result()
+                        with torch.cuda.device(sdp.phys[devs[k]]): parts[k] = QA[devs[k]].result()
                     if multi:
                         for f in [self._pool.submit(finish, k) for k in range(len(devs))]: f.result()
                     else: finish(0)
@@ -856,7 +864,7 @@ class Solver:
                     dp (predictor) or dc (corrector); accumulates the quantities needed afterwards"""
                     bm_d, muS_d = {}, {}
                     for d in devs:
-                        with torch.cuda.device(d): bm_d[d] = self.S(beta * mu); muS_d[d] = self.S(mu)
+                        with torch.cuda.device(sdp.phys[d]): bm_d[d] = self.S(beta * mu); muS_d[d] = self.S(mu)
                     acc = dict(Rerr=mp.mpf(0), fr=mp.mpf(0), lamP=None, lamD=None)
                     TM("direction (corrector) 1" if corr else "direction (predictor) 1")
 

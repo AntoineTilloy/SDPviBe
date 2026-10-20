@@ -82,7 +82,8 @@ pip install -e .
 
 `bin/sdpb` (or `python -m sdpvibe`) takes **the same command line as SDPB 3.1's `sdpb`** and reads and writes
 the same files, so scripts and pipelines that call `sdpb` can call it instead (e.g. hyperion's `sdpb.sh`
-wrapper: `vast/st3d_setup.sh` with `SDPB_WRAPPER=sdpvibe`). No MPI is needed; one process drives one GPU.
+wrapper: `vast/st3d_setup.sh` with `SDPB_WRAPPER=sdpvibe`). No MPI is needed: one process drives one GPU,
+or several with `--gpus` (below).
 
 ```bash
 pmp2sdp --precision 768 --input pmp.json --output sdp          # official SDPB tool (CPU, MPI)
@@ -106,11 +107,18 @@ bin/sdpb -s sdp --precision 768 --findPrimalFeasible --findDualFeasible --writeS
   run. Text checkpoints (`--writeSolution=x,y,X,Y` output directories) are exchangeable with SDPB in both
   directions. SDPB's own binary checkpoints (`checkpoint_<k>_<rank>`) are not readable.
 * **SIGTERM** stops at the next iteration, writes a checkpoint and the solution, exits with code 15.
+* **multi-GPU** (extension): `--gpus 2`, `--gpus 0,2` or `--gpus all` (default: `SDPVIBE_GPUS`, else one
+  GPU). The blocks are distributed over the GPUs (balanced by work); every pass of an iteration runs on
+  all GPUs at once, the per-block contributions are reduced on the first GPU in block order, and Q is
+  summed there and factorised. Results agree with a single-GPU run to working precision (like SDPB with
+  a different number of MPI processes) and are reproducible for a given GPU count; checkpoints do not
+  depend on it. Each GPU needs memory for Q, so this speeds up the block work, not the size limit.
 
 GPU memory is planned from the card's total memory (results are reproducible run to run);
 `SDPB_GPU_MEM_GB=<GB>` plans for (and enforces) a smaller budget. Other environment variables:
 `SDPB_GPU_TIMING=1` (per-phase times and memory peaks), `SDPB_GPU_STREAM=all|none`, `SDPB_GPU_CHUNK_GB`,
-`SDPB_GPU_PANELS`, `CUDA_VISIBLE_DEVICES` (which GPU).
+`SDPB_GPU_PANELS`, `CUDA_VISIBLE_DEVICES` (which GPUs), `SDPVIBE_FAKE_GPUS=k` (testing: the multi-GPU
+code path with k slots on one GPU).
 
 Not (yet) reimplemented: SDPB's other executables `approx_objective` and `outer_limits` (`pmp2sdp` and
 `spectrum` are used as they are).
@@ -132,9 +140,9 @@ docs/      development log
 
 ## Limitations
 
-* One GPU per SDP (several GPUs: one SDP each); multi-GPU per SDP is planned.
-* Factoring Q currently needs ~9x the memory of Q (limits 32 GB cards to nmax~16 for the stress-tensor
-  system); an out-of-core factorisation is planned.
+* Multi-GPU replicates Q on every GPU and factorises it on the first one (no distributed Cholesky yet).
+* Q must fit in GPU memory: its factorisation is tiled when large (~1.6x the memory of Q instead of ~9x),
+  but not out-of-core; on 24 GB cards this limits the stress-tensor system to nmax~18.
 
 ## Credits
 

@@ -44,7 +44,7 @@ def get_state(solver):
     st = {"y": _cpu(solver.y), "x": [None] * sdp.nblocks, "X": [None] * sdp.nblocks, "Y": [None] * sdp.nblocks}
     upd = solver._pending_update
     for gi, g in enumerate(sdp.groups):
-        with torch.cuda.device(g.dev):
+        with torch.cuda.device(sdp.phys[g.dev] if hasattr(sdp, "phys") else 0):
             xs = ST.get(("xs", gi))
             if upd is not None:
                 aP, aD = (solver._to(u, g.dev) for u in upd); dc = ST.get(("dc", gi))
@@ -86,7 +86,7 @@ def set_state(solver, st):
     if solver.y.shape != (sdp.N, 1):
         raise ValueError(f"checkpoint y has shape {solver.y.shape}, the SDP has N={sdp.N}")
     for gi, g in enumerate(sdp.groups):
-        with torch.cuda.device(g.dev):
+        with torch.cuda.device(sdp.phys[g.dev] if hasattr(sdp, "phys") else 0):
             xs = ST.get(("xs", gi))
             x = xs["x"].clone(); X = xs["X"][0].clone(); Y = xs["Y"][0].clone()
             for q, j in enumerate(g.idx):

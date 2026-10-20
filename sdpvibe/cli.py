@@ -170,7 +170,11 @@ def main(argv=None):
         print(f'SDP directory   : "{os.path.abspath(params["sdpDir"])}"')
         print(f'out directory   : "{os.path.abspath(out_dir)}"\n')
         print_parameters(params)
-    sdp = SDP(params["sdpDir"], L, devices=params.get("gpus"))
+    try:
+        sdp = SDP(params["sdpDir"], L, devices=params.get("gpus"))
+    except (ValueError, OSError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
     if verb >= 1:
         print(f"Initialize SDP solver\n\tprimal dimension: {sum(b['K'] * b['dim'] * (b['dim'] + 1) // 2 for b in sdp.layout.blocks)}"
               f"\n\tdual dimension: {sdp.N}\n\tSDP blocks: {sdp.nblocks}")

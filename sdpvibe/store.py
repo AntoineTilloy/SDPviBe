@@ -126,11 +126,12 @@ class Store:
 class MultiStore:
     """one Store per GPU; keys (name, chunk) are routed to the store of the chunk's device
     (dev_of[chunk]).  Each Store is only used from its device's thread."""
-    def __init__(self, host_keys, dev_of, devices):
+    def __init__(self, host_keys, dev_of, phys):
+        """dev_of: chunk -> device slot; phys: slot -> CUDA device"""
         self.dev_of = dev_of
         self.stores = {}
-        for d in devices:
-            with torch.cuda.device(d):
+        for d, pd in enumerate(phys):
+            with torch.cuda.device(pd):
                 self.stores[d] = Store({k for k in host_keys if dev_of[k[1]] == d})
 
     def of(self, key): return self.stores[self.dev_of[key[1]]]
