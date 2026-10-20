@@ -122,7 +122,9 @@ bin/sdpb -s sdp --precision 768 --findPrimalFeasible --findDualFeasible --writeS
   `--maxMemory`) are accepted and ignored.
 * **outputs** (SDPB's formats and number formatting): `out.txt`, `iterations.json` (with the condition
   numbers), `c_minus_By/c_minus_By.json`, `y.txt`, `z.txt`, `x_<j>.txt`, `X_matrix_<k>.txt`, `Y_matrix_<k>.txt`.
-  SDPB's `spectrum` reads them as SDPB's own.
+  SDPB's `spectrum` and `approx_objective` read them as SDPB's own (approx_objective on SDPB's and on
+  SDPviBe's solution of the same SDP: objective and its first and second derivatives agree to 13 digits,
+  the agreement of the solutions).
 * **checkpoints**: written every `--checkpointInterval` seconds and at the end; a checkpoint in the
   initial checkpoint directory is loaded at start, and resuming is bitwise identical to an uninterrupted
   run. Text checkpoints (`--writeSolution=x,y,X,Y` output directories) are exchangeable with SDPB in both
@@ -141,8 +143,8 @@ GPU memory is planned from the card's total memory (results are reproducible run
 `SDPB_GPU_PANELS`, `CUDA_VISIBLE_DEVICES` (which GPUs), `SDPVIBE_FAKE_GPUS=k` (testing: the multi-GPU
 code path with k slots on one GPU).
 
-Not (yet) reimplemented: SDPB's other executables `approx_objective` and `outer_limits` (`pmp2sdp` and
-`spectrum` are used as they are).
+SDPB's other executables (`pmp2sdp`, `spectrum`, `approx_objective`) are used as they are, on SDPviBe's
+outputs; `outer_limits` (a different algorithm) is not reimplemented.
 
 ## Examples and tools
 
