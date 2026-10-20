@@ -150,6 +150,17 @@ def main():
 
     feat = next((c for c in cases if c.get("features")), None)
     if feat and not a.no_features and not a.only:
+        try:
+            features(a, feat, report, rp)
+        except Exception as e:                                       # keep the case results
+            import traceback; traceback.print_exc()
+            report["features"]["error"] = repr(e)
+            json.dump(report, open(rp, "w"), indent=1)
+    write_md(a, report)
+
+
+def features(a, feat, report, rp):
+    if True:
         W = os.path.join(a.work, "features"); shutil.rmtree(W, ignore_errors=True); os.makedirs(W)
         sdp = os.path.join(a.work, feat["name"], "sdp")
         common = f"--precision {feat['precision']} {feat.get('options', '')}"
@@ -202,6 +213,7 @@ def main():
         print(json.dumps(F), flush=True)
         json.dump(report, open(rp, "w"), indent=1)
 
+def write_md(a, report):
     with open(os.path.join(a.work, "report.md"), "w") as f:
         f.write("| case | verdict SDPB / SDPviBe | iterations | per-iteration agreement (digits) | y | s/it SDPB | s/it SDPviBe |\n|---|---|---|---|---|---|---|\n")
         for n, r in report["cases"].items():

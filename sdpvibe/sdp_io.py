@@ -236,3 +236,78 @@ def read_normalization(src):
     if not src.exists("normalization.json"):
         return None
     return src.json("normalization.json")["normalization"]
+
+
+# ------------------------------------------------------------------ writing (binary pmp2sdp format)
+def _encode(limbs, exps, nl, L):
+    lib = _lib()
+    if lib is None:
+        raise RuntimeError("the C encoder is required to write binary SDPs")
+    if not hasattr(lib, "_enc"):
+        f = lib.encode_bigfloats
+        f.restype = ctypes.c_int64
+        f.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int, ctypes.c_int,
+                      ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64]
+        lib._enc = f
+    limbs = np.ascontiguousarray(limbs, dtype=np.int32); exps = np.ascontiguousarray(exps, dtype=np.int64)
+    n = len(exps)
+    out = np.empty(n * (13 + 8 * nl) + 16, dtype=np.uint8)
+    k = lib._enc(limbs.ctypes.data, exps.ctypes.data, n, L, nl, out.ctypes.data, len(out), EZ)
+    if k < 0:
+        raise ValueError("cannot encode (mantissa larger than the archive precision)")
+    return out[:k].tobytes()
+
+
+def write_block_bin(path, blk, precision, L, N):
+    """blk as returned by read_block (host arrays, B row-major (P x N)) -> block_data_<j>.bin"""
+    nl = (precision + 127) // 64 + 1
+    sig = b"serialization::archive"
+    hdr = struct.pack("<Q", len(sig)) + sig + struct.pack("<H", 19) + bytes([4, 8, 4, 8]) + struct.pack("<i", 1)
+    parts = [hdr, struct.pack("<Q", precision)]
+    first = [True]
+
+    def matrix(h, w, limbs, exps, class_info):
+        # row-major (h, w) -> El column-major with ld = h
+        lm = limbs.reshape(h, w, L).transpose(1, 0, 2).reshape(h * w, L) if h * w else limbs
+        ex = exps.reshape(h, w).T.reshape(-1) if h * w else exps
+        out = (b"\0" * 5 if class_info else b"") + struct.pack("<iii", h, w, max(h, 1) if w == 0 else h)
+        if h * w:
+            if first[0]: out += b"\0\x01\0\0\0"; first[0] = False     # El::BigFloat class info, version 1
+            out += _encode(lm, ex, nl, L)
+        return out
+
+    Bl, Be = blk["B"]
+    P = len(Be) // N
+    parts.append(matrix(P, N, Bl, Be, True))
+    cl, ce = blk["c"]
+    v = b"\0" * 5 + struct.pack("<Q", len(ce)) + struct.pack("<I", 1)
+    if len(ce):
+        if first[0]: v += b"\0\x01\0\0\0"; first[0] = False
+        v += _encode(cl, ce, nl, L)
+    parts.append(v)
+    for key in ("bilinear_bases_even", "bilinear_bases_odd"):
+        h, arr = blk[key]
+        K = blk["K"]
+        if arr is None:
+            parts.append(struct.pack("<iii", 0, K, 0))
+        else:
+            parts.append(matrix(h, K, arr[0], arr[1], False))
+    with open(path, "wb") as f:
+        f.write(b"".join(parts))
+
+
+def write_sdp(out_dir, blocks, b_strings, precision, L, constant="0", normalization=None):
+    """write an SDP directory in pmp2sdp's binary format (readable by sdpb and sdpvibe)"""
+    os.makedirs(out_dir, exist_ok=True)
+    N = len(b_strings)
+    with open(os.path.join(out_dir, "control.json"), "w") as f:
+        json.dump({"num_blocks": len(blocks), "command": "sdpvibe.sdp_io.write_sdp"}, f)
+    with open(os.path.join(out_dir, "objectives.json"), "w") as f:
+        json.dump({"constant": constant, "b": list(b_strings)}, f)
+    if normalization is not None:
+        with open(os.path.join(out_dir, "normalization.json"), "w") as f:
+            json.dump({"normalization": list(normalization)}, f)
+    for j, blk in enumerate(blocks):
+        with open(os.path.join(out_dir, f"block_info_{j}.json"), "w") as f:
+            json.dump({"dim": blk["dim"], "num_points": blk["K"]}, f)
+        write_block_bin(os.path.join(out_dir, f"block_data_{j}.bin"), blk, precision, L, N)

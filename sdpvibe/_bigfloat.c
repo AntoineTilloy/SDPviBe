@@ -57,3 +57,55 @@ int64_t decode_bigfloats(const uint8_t *buf, int64_t len, int64_t pos, int64_t n
     }
     return pos;
 }
+
+/* Inverse of decode_bigfloats: n entries (L 32-bit two's-complement limbs, entry-major, value = M 2^e;
+ * zeros: e == EZ or M == 0) -> boost El::BigFloat records with nl GMP limbs.  Writes into out (capacity
+ * cap bytes) and returns the number of bytes written, or -1 if out is too small or a mantissa does not fit. */
+int64_t encode_bigfloats(const int32_t *in, const int64_t *exps, int64_t n, int L, int nl,
+                         uint8_t *out, int64_t cap, int64_t EZ)
+{
+    uint32_t m[L + 2], d[2 * nl + 2];
+    int64_t pos = 0;
+    for (int64_t i = 0; i < n; i++) {
+        const int32_t *x = in + i * (int64_t)L;
+        memcpy(m, x, 4 * (size_t)L); m[L] = m[L + 1] = 0;
+        int neg = (int32_t)m[L - 1] < 0;
+        if (neg) {                                         /* magnitude */
+            uint64_t c = 1;
+            for (int k = 0; k < L; k++) { uint64_t t = (uint64_t)(~m[k]) + c; m[k] = (uint32_t)t; c = t >> 32; }
+        }
+        int top = L - 1;
+        while (top >= 0 && m[top] == 0) top--;
+        if (top < 0 || exps[i] == EZ) {
+            if (pos + 1 > cap) return -1;
+            out[pos++] = 1; continue;                     /* is_zero */
+        }
+        /* value = M 2^e = D 2^(64 (X - size)) with D an integer of `size` 64-bit limbs:
+           shift M left by r = e mod 64 bits, then exponent in limbs */
+        int64_t e = exps[i];
+        int r = (int)(((e % 64) + 64) % 64);
+        int64_t base = (e - r) / 64;                       /* value = (M << r) 2^(64 base) */
+        memset(d, 0, sizeof(d));
+        int q = r >> 5, b = r & 31;
+        for (int k = 0; k <= top + 1 && k + q < 2 * nl + 2; k++) {
+            uint32_t lo = m[k], prev = k > 0 ? m[k - 1] : 0;
+            d[k + q] = b ? (lo << b) | (prev >> (32 - b)) : lo;
+        }
+        if (top + 2 + q < 2 * nl + 2 && b) d[top + 1 + q] = (m[top] >> (32 - b));
+        int dtop = 2 * nl + 1;
+        while (dtop >= 0 && d[dtop] == 0) dtop--;
+        int size = dtop / 2 + 1;                           /* 64-bit limbs used */
+        if (size > nl) return -1;
+        /* drop low zero limbs as GMP does (normalised mpf has no low zero limbs is not required, but keep
+           all `size` limbs starting at limb 0) */
+        int32_t ssize = neg ? -size : size;
+        int64_t X = base + size;
+        if (pos + 1 + 12 + 8 * (int64_t)nl > cap) return -1;
+        out[pos++] = 0;
+        memcpy(out + pos, &ssize, 4); memcpy(out + pos + 4, &X, 8); pos += 12;
+        memset(out + pos, 0, 8 * (size_t)nl);
+        memcpy(out + pos, d, 8 * (size_t)size);
+        pos += 8 * (int64_t)nl;
+    }
+    return pos;
+}

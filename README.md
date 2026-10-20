@@ -78,22 +78,42 @@ pip install cupy-cuda12x        # or cupy-cuda13x, matching your CUDA
 pip install -e .
 ```
 
-## Usage
+## Usage: a drop-in `sdpb`
+
+`bin/sdpb` (or `python -m sdpvibe`) takes **the same command line as SDPB 3.1's `sdpb`** and reads and writes
+the same files, so scripts and pipelines that call `sdpb` can call it instead (e.g. hyperion's `sdpb.sh`
+wrapper: `vast/st3d_setup.sh` with `SDPB_WRAPPER=sdpvibe`). No MPI is needed; one process drives one GPU.
 
 ```bash
-pmp2sdp --precision 768 --input pmp.json --output sdp --outputFormat json     # official SDPB tool
-python -m sdpvibe -s sdp --precision 768 --findPrimalFeasible --findDualFeasible -o out
+pmp2sdp --precision 768 --input pmp.json --output sdp          # official SDPB tool (CPU, MPI)
+bin/sdpb -s sdp --precision 768 --findPrimalFeasible --findDualFeasible --writeSolution=x,y,z
 ```
 
-Options follow SDPB (`--precision`, `--maxIterations`, `--dualityGapThreshold`, `--primalErrorThreshold`,
-`--dualErrorThreshold`, `--initialMatrixScalePrimal/Dual`, `--feasibleCenteringParameter`,
-`--infeasibleCenteringParameter`, `--stepLengthReduction`, `--maxComplementarity`, `--findPrimalFeasible`,
-`--findDualFeasible`, `--detectPrimalFeasibleJump`, `--detectDualFeasibleJump`). Output: `out/out.txt`
-and `out/iterations.json` (same fields as SDPB's).
+* **input**: pmp2sdp output in binary (default) or JSON format, as a directory or an archive
+  (`--zip`, tar, tar.gz); `normalization.json` for `z`.
+* **options**: all of SDPB 3.1's (`--help`): `-s/--sdpDir`, `-o/--outDir` (default `<sdp>_out`),
+  `-c/--checkpointDir` (default `<sdp>.ck`), `-i/--initialCheckpointDir`, `-p/--paramFile` (key=value),
+  `--precision`, `--maxIterations`, `--maxRuntime`, `--checkpointInterval`, `--noFinalCheckpoint`,
+  `--writeSolution`, `--verbosity`, the thresholds, initial matrix scales, centering parameters,
+  `--stepLengthReduction`, `--minPrimalStep/--minDualStep`, `--maxComplementarity`, `--find*Feasible`,
+  `--detect*FeasibleJump`. MPI-only options (`--procsPerNode`, `--procGranularity`, `--maxSharedMemory`,
+  `--maxMemory`) are accepted and ignored.
+* **outputs** (SDPB's formats and number formatting): `out.txt`, `iterations.json` (with the condition
+  numbers), `c_minus_By/c_minus_By.json`, `y.txt`, `z.txt`, `x_<j>.txt`, `X_matrix_<k>.txt`, `Y_matrix_<k>.txt`.
+  SDPB's `spectrum` reads them as SDPB's own.
+* **checkpoints**: written every `--checkpointInterval` seconds and at the end; a checkpoint in the
+  initial checkpoint directory is loaded at start, and resuming is bitwise identical to an uninterrupted
+  run. Text checkpoints (`--writeSolution=x,y,X,Y` output directories) are exchangeable with SDPB in both
+  directions. SDPB's own binary checkpoints (`checkpoint_<k>_<rank>`) are not readable.
+* **SIGTERM** stops at the next iteration, writes a checkpoint and the solution, exits with code 15.
 
-Environment variables: `SDPB_GPU_TIMING=1` (per-phase times and memory peaks), `SDPB_GPU_MEM_GB=<GB>`
-(plan for and enforce a smaller GPU), `SDPB_GPU_STREAM=all|none` (force streaming / residency),
-`SDPB_GPU_CHUNK_GB`, `SDPB_GPU_PANELS`.
+GPU memory is planned from the card's total memory (results are reproducible run to run);
+`SDPB_GPU_MEM_GB=<GB>` plans for (and enforces) a smaller budget. Other environment variables:
+`SDPB_GPU_TIMING=1` (per-phase times and memory peaks), `SDPB_GPU_STREAM=all|none`, `SDPB_GPU_CHUNK_GB`,
+`SDPB_GPU_PANELS`, `CUDA_VISIBLE_DEVICES` (which GPU).
+
+Not (yet) reimplemented: SDPB's other executables `approx_objective` and `outer_limits` (`pmp2sdp` and
+`spectrum` are used as they are).
 
 ## Examples and tools
 
@@ -112,10 +132,9 @@ docs/      development log
 
 ## Limitations
 
-* Input is `pmp2sdp`'s JSON format; very large SDPs need a binary reader (not written yet).
-* No checkpoints / hot start yet; single GPU per SDP.
+* One GPU per SDP (several GPUs: one SDP each); multi-GPU per SDP is planned.
 * Factoring Q currently needs ~9x the memory of Q (limits 32 GB cards to nmax~16 for the stress-tensor
-  system).
+  system); an out-of-core factorisation is planned.
 
 ## Credits
 

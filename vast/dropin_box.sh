@@ -17,8 +17,8 @@ R=$PWD/tools/sdpb_root; NP=$(nproc)
 export OPAL_PREFIX=$R/usr OMPI_ALLOW_RUN_AS_ROOT=1 OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
 MPI="$R/usr/bin/mpirun --allow-run-as-root"
 log "setup done; running suite"
-python3 tests/dropin_suite.py --work runs/dropin --sdpb "$MPI --bind-to core -n $NP $R/usr/local/bin/sdpb" \
-    --pmp2sdp "$MPI -n $NP $R/usr/local/bin/pmp2sdp" --spectrum "$MPI -n 1 $R/usr/local/bin/spectrum" \
+python3 tests/dropin_suite.py --work runs/dropin --sdpb "$MPI --bind-to core $R/usr/local/bin/sdpb" \
+    --pmp2sdp "$MPI $R/usr/local/bin/pmp2sdp" --spectrum "$MPI -n 1 $R/usr/local/bin/spectrum" \
     --sdpvibe "bin/sdpb" > results/dropin_suite.out 2>&1 || log "FAILED suite: $(tail -5 results/dropin_suite.out | tr '\n' ' ')"
 cp runs/dropin/report.json runs/dropin/report.md results/ 2>/dev/null
 log "suite finished: $(grep -c '^{' results/dropin_suite.out) result lines"

@@ -101,10 +101,17 @@ echo pmp2sdp "\$@" >> /root/hyp/pmp2sdp_calls.log
 $R/usr/bin/mpirun --allow-run-as-root -n $NP $R/usr/local/bin/pmp2sdp "\$@"
 EOF
 done
-# SDPB_WRAPPER=block: hyperion only builds the SDP; its sdpb call is logged and parked (the SDP is
-# solved outside hyperion, see vast/st3d_point.sh); default: official SDPB on all cores
+# SDPB_WRAPPER=sdpvibe: hyperion's sdpb calls go to SDPviBe (bin/sdpb); block: hyperion only builds the SDP,
+# its sdpb call is logged and parked (solved outside hyperion, see vast/st3d_point.sh); default: official SDPB
 for s in sdpb srun_sdpb; do
-if [ "${SDPB_WRAPPER:-run}" = block ]; then cat > $C/$s.sh <<EOF
+if [ "${SDPB_WRAPPER:-run}" = sdpvibe ]; then cat > $C/$s.sh <<EOF
+#!/bin/bash
+# SDPviBe on the GPU, same command line as sdpb (no MPI needed)
+for v in \$(env | grep -o '^SLURM[A-Z_]*'); do unset \$v; done
+echo "\$(date +%s) sdpvibe \$@" >> /root/hyp/sdpb_calls.log
+exec $PWD/bin/sdpb "\$@"
+EOF
+elif [ "${SDPB_WRAPPER:-run}" = block ]; then cat > $C/$s.sh <<EOF
 #!/bin/bash
 echo "\$(date +%s) sdpb \$@" >> /root/hyp/sdpb_calls.log
 exec sleep infinity

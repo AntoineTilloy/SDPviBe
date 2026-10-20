@@ -6,10 +6,11 @@ seen=0; mkdir -p $DEST
 while true; do
   URL=$(~/.local/bin/vastai ssh-url "$ID" 2>/dev/null) || { echo "instance gone"; exit 1; }
   HP=${URL#ssh://}; H=${HP%:*}; PT=${HP##*:}
-  ssh -p $PT -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new $H "tar czf - -C SDPviBe results ${EXTRA:-}" 2>/dev/null | tar xzf - -C $DEST 2>/dev/null
+  ssh -p $PT -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new $H "tar czf - -C SDPviBe --exclude=sdp --exclude=*.ck --exclude=sdp.zip --exclude=\"*.pt\" results ${EXTRA:-}" 2>/dev/null | tar xzf - -C $DEST 2>/dev/null
   if [ -f $DEST/results/$LOGF ]; then
     n=$(wc -l < $DEST/results/$LOGF); [ $n -gt $seen ] && tail -n $((n - seen)) $DEST/results/$LOGF && seen=$n
     if grep -q "DONE\|shutting down" $DEST/results/$LOGF; then
+      [ "${NO_PULLED:-0}" = 1 ] && { echo "DONE (not signalling PULLED)"; exit 0; }
       ssh -p $PT $H 'touch SDPviBe/results/PULLED' 2>/dev/null; echo PULLED; exit 0
     fi
   fi

@@ -10,20 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import torch
 from sdpvibe.solver import SDP, Solver, Layout
-
-
-def st3d_like(nmax, scale_blocks=1.0, seed=0):
-    s = nmax / 6
-    N = int(round(742 * s * s))
-    Kmax = int(round(57 * s))
-    rng = np.random.default_rng(seed)
-    blocks = []
-    for dim, cnt in {1: 45, 2: 53, 3: 1, 4: 1, 5: 13}.items():
-        n = max(1, int(round(cnt * s * scale_blocks)))
-        for i in range(n):
-            K = 1 if (dim == 1 and i < 3) else int(rng.integers(int(0.7 * Kmax), Kmax + 1))
-            blocks.append(dict(dim=dim, K=K, he=(K - 1) // 2 + 1, ho=(K - 2) // 2 + 1 if K > 1 else 0))
-    return blocks, N
+from sdpvibe.synthetic import st3d_like
 
 
 ap = argparse.ArgumentParser()

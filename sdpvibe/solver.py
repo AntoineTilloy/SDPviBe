@@ -243,8 +243,9 @@ class Layout:
                 if chunk or W < 2 ** 26 or all(len(c) == 1 or self.ws(blocks, c) + slot <= 0.9 * avail
                                                 for c in self.chunks): break
                 W *= 0.85
-            if self.A_QC * N * N * E + 1.2 * 2 ** 30 > budget:
-                print(f"warning: chol(Q) needs ~{_gb(self.A_QC * N * N * E):.1f} GB (N={N}) > GPU budget (estimate)")
+            qc = self.qc_factor(N, E, budget)
+            if qc * N * N * E + 1.2 * 2 ** 30 > budget:
+                print(f"warning: chol(Q) needs ~{_gb(qc * N * N * E):.1f} GB (N={N}) > GPU budget (estimate)")
             if need > 0.9 * avail:
                 print(f"warning: largest chunk needs ~{_gb(need):.1f} GB, available after fixed allocations "
                       f"~{_gb(avail):.1f} GB (estimates; may not fit)")
@@ -255,12 +256,21 @@ class Layout:
             if stream == "all":
                 self.host_keys = {(n, gi) for _, gi, n, _ in items}
             else:
-                left = min(0.9 * avail - need, 0.9 * budget - self.A_QC * N * N * E - 1.2 * 2 ** 30)
+                left = min(0.9 * avail - need, 0.9 * budget - qc * N * N * E - 1.2 * 2 ** 30)
                 self.host_keys = set()
                 for _, gi, name, nbt in sorted(items):
                     if nbt <= left: left -= nbt
                     else: self.host_keys.add((name, gi))
         self.blocks = blocks
+
+    @classmethod
+    def qc_factor(cls, N, E, budget):
+        """peak of the Cholesky of Q in units of N^2 MPF entries: monolithic ~9, tiled (blockchol) ~1.6
+        (same rule as Solver._q_block)"""
+        forced = int(os.environ.get("SDPB_GPU_QBLOCK", 0))
+        if (forced and forced < N) or (not forced and cls.A_QC * N * N * E > 0.35 * budget and N > 2048):
+            return 1.6
+        return cls.A_QC
 
     def _split(self, blocks, bydim, W):
         chunks = []
@@ -428,6 +438,16 @@ def fmt_big(v, digits):
     return s
 
 
+def chol_log2_cond_parts(ch):
+    """(max, min) over the diagonal of L (log2) for a single-matrix Chol"""
+    n = ch.n; L = ch.L
+    idx = torch.arange(n, device=dev)
+    d = ch.Lt.limbs[:, :, idx, idx]
+    top = d[-1].double() * 2.0 ** 32 + (d[-2].double() % 2.0 ** 32) if L > 1 else d[-1].double()
+    lg = torch.log2(torch.clamp(top, min=1e-300)) + (ch.Lt.exp + 32 * (L - 2)) + ch.k.double()
+    return float(lg.max()), float(lg.min())
+
+
 def chol_log2_cond(ch, mask=None):
     """per block log2 of SDPB's Cholesky condition number estimate (max/min diagonal of L)^2;
     mask (nb, n): rows that count (padding excluded)"""
@@ -462,6 +482,20 @@ class Solver:
             sdp.store.put(("xs", gi), dict(x=F.zeros((g.nb, g.P, 1), L), X=Xg, Y=Yg))
             for k in ("dc", "dp", "dir", "cholS", "Pm"): sdp.store.drop((k, gi))
         self.y = F.zeros((sdp.N, 1), L)
+
+    def _q_block(self, Q):
+        """use the tiled Cholesky of Q? (SDPB_GPU_QBLOCK=<tile> forces it; else when the monolithic
+        factorisation, ~9 Q, would not comfortably fit the GPU budget)"""
+        forced = int(os.environ.get("SDPB_GPU_QBLOCK", 0))
+        N = Q.shape[0]
+        if forced:
+            self._q_block_size = forced
+            return forced < N
+        E = 4 * self.L + 8
+        if 9.0 * N * N * E > 0.35 * self.sdp.layout.budget and N > 2048:
+            self._q_block_size = 2048
+            return True
+        return False
 
     def segments(self, g):
         return [(c, r, (c * (c + 1) // 2 + r) * g.K) for c in range(g.dim) for r in range(c + 1)]
@@ -673,8 +707,14 @@ class Solver:
                 loss = QA.precision_loss()
                 if loss > 28: self.q_lossy = getattr(self, "q_lossy", 0) + 1     # reference > 28 bits above the column max
                 self._q_ref = QA.next_reference(); del QA
-            cholQ = Chol(copy_lower_to_upper(Q)); del Q
-            Q_cond = mp.mpf(2) ** mp.mpf(float(chol_log2_cond(cholQ)[0]))
+            if self._q_block(Q):                                         # tiled: ~Q/2 instead of ~9 Q
+                from .blockchol import BlockChol
+                holder = [Q]; del Q
+                cholQ = BlockChol(holder, self._q_block_size)
+                Q_cond = mp.mpf(2) ** mp.mpf(cholQ.log2_cond())
+            else:
+                cholQ = Chol(copy_lower_to_upper(Q)); del Q
+                Q_cond = mp.mpf(2) ** mp.mpf(float(chol_log2_cond(cholQ)[0]))
 
             def direction(beta, corr):
                 """predictor (corr=False) or corrector search direction; returns dy and, per chunk, stores
