@@ -159,6 +159,20 @@ def main(argv=None):
     verb = params["verbosity"]
     out_dir = params["outDir"]
 
+    from . import dist as D
+    from .solver import resolve_devices
+    if not D.is_worker():
+        try:
+            phys = resolve_devices(params.get("gpus"))
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        if len(phys) > 1:                                         # one process per GPU
+            return D.launch(argv, phys)
+    else:
+        D.init()
+    lead = D.rank() == 0                                          # rank 0 writes the files
+
     from . import mpf as F
     from .solver import SDP, Solver
     from . import checkpoint as CK, sdpb_output as O, state as STATE
@@ -171,7 +185,7 @@ def main(argv=None):
         print(f'out directory   : "{os.path.abspath(out_dir)}"\n')
         print_parameters(params)
     try:
-        sdp = SDP(params["sdpDir"], L, devices=params.get("gpus"))
+        sdp = SDP(params["sdpDir"], L)
     except (ValueError, OSError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
@@ -204,22 +218,23 @@ def main(argv=None):
     def save_ck(s):
         if not params["checkpointDir"]: return
         if verb >= 1: print(f"Saving checkpoint to    : {params['checkpointDir']}")
-        CK.save(params["checkpointDir"], STATE.get_state(s), sdp, L, params["precision"], ck_opts)
+        st = STATE.get_state(s)                                     # collective
+        if lead: CK.save(params["checkpointDir"], st, sdp, L, params["precision"], ck_opts)
 
-    ij = O.IterationsJson(out_dir)
+    ij = O.IterationsJson(out_dir) if lead else None
     if verb >= 1:
         print(f"{datetime.datetime.now():%Y-%b-%d %H:%M:%S} Start solver iterations")
         print("\n          time    mu     P-obj       D-obj      gap         P-err       p-err       D-err      P-step   D-step   beta\n"
               + "-" * 117)
 
     def on_it(row):
-        ij.append(row)
+        if lead: ij.append(row)
         if verb >= 1: print(iteration_line(row, solver.last_mu, solver.last_steps), flush=True)
 
     res = solver.run(log=None, verbose=False, on_iteration=on_it, max_runtime=params["maxRuntime"],
                      checkpoint=save_ck if params["checkpointDir"] else None,
                      checkpoint_interval=params["checkpointInterval"], stop=lambda: sigterm["got"])
-    ij.close()
+    if lead: ij.close()
     reason = res["terminateReason"]
     if verb >= 1:
         f = lambda v: O.fmt_big(v, digits)
@@ -229,12 +244,14 @@ def main(argv=None):
     if reason == "SIGTERM signal received" or not params["noFinalCheckpoint"]:
         save_ck(solver)
     if verb >= 1: print(f"Saving solution to      : \"{os.path.abspath(out_dir)}\"")
-    os.makedirs(out_dir, exist_ok=True)
-    O.write_out_txt(out_dir, res, digits, time.time() - start)
-    state = STATE.get_state(solver) if parts else None
-    if parts:
-        O.write_solution(out_dir, state, parts, digits, sdp.normalization)
-    O.write_c_minus_By(os.path.join(out_dir, "c_minus_By", "c_minus_By.json"), STATE.c_minus_By_blocks(solver), digits)
+    state = STATE.get_state(solver) if parts else None             # collective
+    cmb = STATE.c_minus_By_blocks(solver)                           # collective
+    if lead:
+        os.makedirs(out_dir, exist_ok=True)
+        O.write_out_txt(out_dir, res, digits, time.time() - start)
+        if parts:
+            O.write_solution(out_dir, state, parts, digits, sdp.normalization)
+        O.write_c_minus_By(os.path.join(out_dir, "c_minus_By", "c_minus_By.json"), cmb, digits)
     if reason == "SIGTERM signal received":
         if verb >= 1: print("Received SIGTERM, exiting gracefully...")
         return 15

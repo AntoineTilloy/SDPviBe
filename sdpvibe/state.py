@@ -39,29 +39,37 @@ def _X_index(g, h_j):
 
 
 def get_state(solver):
+    """the full state on rank 0 (multi-GPU: collective, gathers every rank's blocks; other ranks get None)"""
+    from . import dist as D
     sdp = solver.sdp
     ST = sdp.store
     st = {"y": _cpu(solver.y), "x": [None] * sdp.nblocks, "X": [None] * sdp.nblocks, "Y": [None] * sdp.nblocks}
     upd = solver._pending_update
     for gi, g in enumerate(sdp.groups):
-        with torch.cuda.device(sdp.phys[g.dev] if hasattr(sdp, "phys") else 0):
-            xs = ST.get(("xs", gi))
-            if upd is not None:
-                aP, aD = (solver._to(u, g.dev) for u in upd); dc = ST.get(("dc", gi))
-                xs = dict(x=add(xs["x"], mul(dc["dx"], aP)), X=[add(X, mul(d, aP)) for X, d in zip(xs["X"], dc["dX"])],
-                          Y=[add(Y, mul(d, aD)) for Y, d in zip(xs["Y"], dc["dY"])])
-            x = _cpu(xs["x"]); X = _cpu(xs["X"][0]); Y = _cpu(xs["Y"][0])
-            for q, j in enumerate(g.idx):
-                dim, K_j, hs = _block_shapes(sdp, j)
-                ix = _x_index(g, K_j)
-                st["x"][j] = MPF(x.m[:, q, ix].contiguous(), x.e[q, ix].contiguous())
-                Xs, Ys = [], []
-                for p in (0, 1):
-                    z = p * g.nb + q
-                    ii = _X_index(g, hs[p])
-                    Xs.append(MPF(X.m[:, z][:, ii][:, :, ii].contiguous(), X.e[z][ii][:, ii].contiguous()))
-                    Ys.append(MPF(Y.m[:, z][:, ii][:, :, ii].contiguous(), Y.e[z][ii][:, ii].contiguous()))
-                st["X"][j] = Xs; st["Y"][j] = Ys
+        if g.dev != D.rank(): continue
+        xs = ST.get(("xs", gi))
+        if upd is not None:
+            aP, aD = upd; dc = ST.get(("dc", gi))
+            xs = dict(x=add(xs["x"], mul(dc["dx"], aP)), X=[add(X, mul(d, aP)) for X, d in zip(xs["X"], dc["dX"])],
+                      Y=[add(Y, mul(d, aD)) for Y, d in zip(xs["Y"], dc["dY"])])
+        x = _cpu(xs["x"]); X = _cpu(xs["X"][0]); Y = _cpu(xs["Y"][0])
+        for q, j in enumerate(g.idx):
+            dim, K_j, hs = _block_shapes(sdp, j)
+            ix = _x_index(g, K_j)
+            st["x"][j] = MPF(x.m[:, q, ix].contiguous(), x.e[q, ix].contiguous())
+            Xs, Ys = [], []
+            for p in (0, 1):
+                z = p * g.nb + q
+                ii = _X_index(g, hs[p])
+                Xs.append(MPF(X.m[:, z][:, ii][:, :, ii].contiguous(), X.e[z][ii][:, ii].contiguous()))
+                Ys.append(MPF(Y.m[:, z][:, ii][:, :, ii].contiguous(), Y.e[z][ii][:, ii].contiguous()))
+            st["X"][j] = Xs; st["Y"][j] = Ys
+    if D.multi():
+        parts = D.allgather({k: {j: v for j, v in enumerate(st[k]) if v is not None} for k in ("x", "X", "Y")})
+        if D.rank() != 0: return None
+        for part in parts:
+            for k in ("x", "X", "Y"):
+                for j, v in part[k].items(): st[k][j] = v
     return st
 
 
@@ -85,41 +93,46 @@ def set_state(solver, st):
     solver.y = _to_dev_L(st["y"], L)
     if solver.y.shape != (sdp.N, 1):
         raise ValueError(f"checkpoint y has shape {solver.y.shape}, the SDP has N={sdp.N}")
+    from . import dist as D
     for gi, g in enumerate(sdp.groups):
-        with torch.cuda.device(sdp.phys[g.dev] if hasattr(sdp, "phys") else 0):
-            xs = ST.get(("xs", gi))
-            x = xs["x"].clone(); X = xs["X"][0].clone(); Y = xs["Y"][0].clone()
-            for q, j in enumerate(g.idx):
-                dim, K_j, hs = _block_shapes(sdp, j)
-                ix = _x_index(g, K_j).to(x.e.device)
-                v = _to_dev_L(st["x"][j], L).reshape(-1)
-                if v.shape[0] != len(ix):
-                    raise ValueError(f"checkpoint x_{j} has {v.shape[0]} entries, expected {len(ix)}")
-                x.m[:, q, ix, 0] = v.m; x.e[q, ix, 0] = v.e
-                for p in (0, 1):
-                    z = p * g.nb + q
-                    ii = _X_index(g, hs[p]).to(x.e.device)
-                    for M, src in ((X, st["X"][j][p]), (Y, st["Y"][j][p])):
-                        s = _to_dev_L(src, L)
-                        if s.shape != (len(ii), len(ii)):
-                            raise ValueError(f"checkpoint matrix block {2 * j + p} has shape {s.shape}, expected {len(ii)}")
-                        if len(ii):
-                            sub_m = M.m[:, z]; sub_e = M.e[z]
-                            sub_m[:, ii[:, None], ii[None, :]] = s.m
-                            sub_e[ii[:, None], ii[None, :]] = s.e
-            ST.put(("xs", gi), dict(x=x, X=[X], Y=[Y]))
+        if g.dev != D.rank(): continue
+        xs = ST.get(("xs", gi))
+        x = xs["x"].clone(); X = xs["X"][0].clone(); Y = xs["Y"][0].clone()
+        for q, j in enumerate(g.idx):
+            dim, K_j, hs = _block_shapes(sdp, j)
+            ix = _x_index(g, K_j).to(x.e.device)
+            v = _to_dev_L(st["x"][j], L).reshape(-1)
+            if v.shape[0] != len(ix):
+                raise ValueError(f"checkpoint x_{j} has {v.shape[0]} entries, expected {len(ix)}")
+            x.m[:, q, ix, 0] = v.m; x.e[q, ix, 0] = v.e
+            for p in (0, 1):
+                z = p * g.nb + q
+                ii = _X_index(g, hs[p]).to(x.e.device)
+                for M, src in ((X, st["X"][j][p]), (Y, st["Y"][j][p])):
+                    s = _to_dev_L(src, L)
+                    if s.shape != (len(ii), len(ii)):
+                        raise ValueError(f"checkpoint matrix block {2 * j + p} has shape {s.shape}, expected {len(ii)}")
+                    if len(ii):
+                        sub_m = M.m[:, z]; sub_e = M.e[z]
+                        sub_m[:, ii[:, None], ii[None, :]] = s.m
+                        sub_e[ii[:, None], ii[None, :]] = s.e
+        ST.put(("xs", gi), dict(x=x, X=[X], Y=[Y]))
 
 
 def c_minus_By_blocks(solver):
-    """c - B y per block (SDPB order), from the last residue pass"""
+    """c - B y per block (SDPB order), from the last residue pass (multi-GPU: collective, rank 0 gets all)"""
+    from . import dist as D
     sdp = solver.sdp
     out = [None] * sdp.nblocks
     for gi, g in enumerate(sdp.groups):
         v = solver.c_minus_By[gi]
-        if v is None:
+        if v is None or g.dev != D.rank():
             continue
         v = _cpu(v)
         for q, j in enumerate(g.idx):
             ix = _x_index(g, sdp.layout.blocks[j]["K"])
             out[j] = MPF(v.m[:, q, ix, 0].contiguous(), v.e[q, ix, 0].contiguous())
+    if D.multi():
+        for part in D.allgather({j: b for j, b in enumerate(out) if b is not None}):
+            for j, b in part.items(): out[j] = b
     return [b for b in out if b is not None]

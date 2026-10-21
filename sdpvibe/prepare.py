@@ -14,7 +14,7 @@ ap.add_argument("--json")
 a = ap.parse_args()
 L = (a.precision + 2 + 31) // 32 + a.guardLimbs
 t0 = time.time()
-raw, info = load_raw(a.sdpDir, L, a.workers)
+meta, raw, info = load_raw(a.sdpDir, L, a.workers)
 N = len(json.load(open(os.path.join(a.sdpDir, "objectives.json")))["b"])
 E = 4 * L + 8
 dims = collections.Counter(r["dim"] for r in raw)
