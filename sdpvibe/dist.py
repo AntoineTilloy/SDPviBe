@@ -113,28 +113,68 @@ def allreduce_max_(t):
     return t
 
 
-def sum_mpf(Q, add, panels=8):
-    """sum over ranks of N x N MPF matrices (Q: this rank's part, or None), in rank order, identical on
-    every rank; column panels bound the extra memory"""
+def _a2a(out, inp, out_splits, in_splits):
+    import torch.distributed as D
+    if os.environ.get("SDPVIBE_DIST_BACKEND", "nccl") == "nccl":
+        D.all_to_all_single(out, inp, out_splits, in_splits)
+    else:                                                    # gloo has no all_to_all: broadcasts via host
+        offs_in = [sum(in_splits[:r]) for r in range(world())]
+        for r in range(world()):
+            h = inp.cpu() if r == rank() else torch.empty(sum(_all_splits[r]), dtype=inp.dtype)
+            D.broadcast(h, src=r)
+            o = sum(out_splits[:r])
+            mine = sum(_all_splits[r][:rank()])
+            out[o:o + out_splits[r]].copy_(h[mine:mine + out_splits[r]])
+
+
+def _allgather_cat(out, inp):
+    import torch.distributed as D
+    if os.environ.get("SDPVIBE_DIST_BACKEND", "nccl") == "nccl":
+        D.all_gather_into_tensor(out, inp)
+    else:
+        h = [torch.empty_like(inp, device="cpu") for _ in range(world())]
+        D.all_gather(h, inp.cpu()); out.copy_(torch.cat(h).to(out.device))
+
+
+_all_splits = None
+
+
+def sum_mpf(Q, add):
+    """sum over ranks of N x N MPF matrices (Q: this rank's part; None: zero), identical on every rank:
+    rank r sums column panel r of all parts (in rank order) and the panels are all-gathered, so each rank
+    adds ~N^2 entries whatever the number of ranks"""
+    global _all_splits
     if not multi(): return Q
-    from .mpf import MPF
-    have = allgather(None if Q is None else (tuple(Q.m.shape), tuple(Q.e.shape)))
+    from .mpf import MPF, EZ
+    k, me = world(), rank()
+    have = allgather(None if Q is None else (tuple(Q.m.shape)))
     shp = next((h for h in have if h is not None), None)
     if shp is None: return None
-    (L, N, N2), _ = shp
-    w = max(1, -(-N2 // panels))
-    out_m = torch.empty((L, N, N2), dtype=torch.int32, device="cuda"); out_e = torch.empty((N, N2), dtype=torch.int64, device="cuda")
-    for c0 in range(0, N2, w):
-        c1 = min(N2, c0 + w)
-        acc = None
-        for r in range(world()):
-            if have[r] is None: continue
-            if r == rank(): m = Q.m[:, :, c0:c1].contiguous(); e = Q.e[:, c0:c1].contiguous()
-            else:
-                m = torch.empty((L, N, c1 - c0), dtype=torch.int32, device="cuda"); e = torch.empty((N, c1 - c0), dtype=torch.int64, device="cuda")
-            _tensor_bcast(m, r); _tensor_bcast(e, r)
-            acc = MPF(m, e) if acc is None else add(acc, MPF(m, e))
-            del m, e
-        out_m[:, :, c0:c1] = acc.m; out_e[:, c0:c1] = acc.e
-        del acc
+    L, N, N2 = shp
+    if Q is None:
+        Q = MPF(torch.zeros((L, N, N2), dtype=torch.int32, device="cuda"), torch.full((N, N2), EZ, dtype=torch.int64, device="cuda"))
+    cuts = [N2 * r // k for r in range(k + 1)]
+    wmax = max(cuts[r + 1] - cuts[r] for r in range(k))
+    res_m, res_e = [], []
+    for part, per in ((Q.m, L * N), (Q.e, N)):
+        send = torch.cat([part[..., cuts[r]:cuts[r + 1]].reshape(-1) for r in range(k)])
+        in_splits = [per * (cuts[r + 1] - cuts[r]) for r in range(k)]
+        _all_splits = allgather(in_splits) if os.environ.get("SDPVIBE_DIST_BACKEND", "nccl") != "nccl" else None
+        w = cuts[me + 1] - cuts[me]
+        recv = torch.empty(k * per * w, dtype=part.dtype, device="cuda")
+        _a2a(recv, send, [per * w] * k, in_splits); del send
+        (res_m if part is Q.m else res_e).append(recv)
+    w = cuts[me + 1] - cuts[me]
+    acc = None
+    for r in range(k):                                     # panel `me` of every rank's part, in rank order
+        m = res_m[0][r * L * N * w:(r + 1) * L * N * w].view(L, N, w); e = res_e[0][r * N * w:(r + 1) * N * w].view(N, w)
+        acc = MPF(m.clone(), e.clone()) if acc is None else add(acc, MPF(m, e))
+    del res_m, res_e
+    # all-gather the summed panels (padded to the widest)
+    pm = torch.zeros((L, N, wmax), dtype=torch.int32, device="cuda"); pe = torch.full((N, wmax), EZ, dtype=torch.int64, device="cuda")
+    pm[:, :, :w] = acc.m; pe[:, :w] = acc.e; del acc
+    gm = torch.empty((k,) + tuple(pm.shape), dtype=torch.int32, device="cuda"); ge = torch.empty((k,) + tuple(pe.shape), dtype=torch.int64, device="cuda")
+    _allgather_cat(gm.view(-1), pm.reshape(-1)); _allgather_cat(ge.view(-1), pe.reshape(-1)); del pm, pe
+    out_m = torch.cat([gm[r][:, :, :cuts[r + 1] - cuts[r]] for r in range(k)], dim=2)
+    out_e = torch.cat([ge[r][:, :cuts[r + 1] - cuts[r]] for r in range(k)], dim=1)
     return MPF(out_m, out_e)

@@ -88,7 +88,7 @@ class Store:
         self.ev_d2h[key] = e2
 
     def prefetch(self, key):
-        if key not in self.host_keys or key in self.pending: return
+        if key not in self.host_keys or key in self.pending or key not in self.host: return   # (not stored yet)
         with torch.cuda.stream(self.h2d):
             if key in self.ev_d2h: self.h2d.wait_event(self.ev_d2h[key])
             def f(h):

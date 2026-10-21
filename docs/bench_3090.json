@@ -1,0 +1,62 @@
+{
+ "title": "SDPviBe on RTX 3090s vs SDPB 3.1 on 64 CPU cores (time per iteration)",
+ "sdpb": "SDPB 3.1 on 64 cores",
+ "gpu": "RTX 3090",
+ "note": "SDPB: AMD EPYC, 64 threads (vast.ai); GPUs: 8x RTX 3090 box (EPYC 7543), PCIe; mean over iterations 2+. Synthetic SDPs: tools/synth_sdp.py (stress-tensor-system block structure), 832 bits. Real: mixed Ising nmax=10 (pmp2sdp), 768 bits, 131 iterations.",
+ "problems": [
+  {
+   "name": "mixed Ising\nnmax=10 (real)",
+   "N": 274,
+   "sdpb_s": 10.2,
+   "gpu_s": {
+    "1": 1.197,
+    "2": 0.916,
+    "4": 0.934
+   }
+  },
+  {
+   "name": "stress-tensor\nnmax~6",
+   "N": 742,
+   "sdpb_s": 108.1,
+   "gpu_s": {
+    "1": 6.707,
+    "2": 4.176,
+    "4": 3.492
+   }
+  },
+  {
+   "name": "stress-tensor\nnmax~8",
+   "N": 1319,
+   "sdpb_s": 343.9,
+   "gpu_s": {
+    "1": 17.702,
+    "2": 8.734,
+    "4": 5.931
+   }
+  },
+  {
+   "name": "stress-tensor\nnmax~10",
+   "N": 2061,
+   "sdpb_s": 963.7,
+   "gpu_s": {
+    "1": 33.678,
+    "2": 18.034,
+    "4": 11.009
+   }
+  }
+ ],
+ "gpu_8_s": {
+  "stress-tensor nmax~6": 5.082,
+  "stress-tensor nmax~8": 7.627,
+  "stress-tensor nmax~10": 14.973,
+  "stress-tensor nmax~12": 56.251
+ },
+ "no_sdpb": {
+  "stress-tensor nmax~12 (N=2968)": {
+   "1": 77.528,
+   "2": 42.51,
+   "4": 24.301,
+   "8": 56.251
+  }
+ }
+}

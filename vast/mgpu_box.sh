@@ -31,7 +31,7 @@ sv() {  # tag gpus sdp precision extra-args...
     [ $rc = 0 ] || log "  error: $(grep -v '^\s*$' $W/$tag.log | tail -3 | tr '\n' ' ' | cut -c1-400)"
 }
 cmp_it() {  # a b
-    python3 - "$W/$1/iterations.json" "$W/$2/iterations.json" >> $LOG 2>&1 <<'EOF'
+    python3 - "${BASEW:-$W}/$1/iterations.json" "$W/$2/iterations.json" >> $LOG 2>&1 <<'EOF'
 import json, sys, mpmath as mp
 mp.mp.prec = 1200
 a, b = (json.load(open(f)) for f in sys.argv[1:3])
@@ -49,9 +49,9 @@ log "setup done"
 # 1. correctness on a real SDP
 F="--findPrimalFeasible --findDualFeasible --detectPrimalFeasibleJump --detectDualFeasibleJump --noFinalCheckpoint"
 S=testdata/sdp_mixed_n10_ising
-for g in ${REAL_GPUS:-$GPUS}; do sv real_g$g $g $S 768 $F; [ $g = 1 ] || cmp_it real_g1 real_g$g; done
-GMAX=$(echo ${REAL_GPUS:-$GPUS} | awk '{print $NF}')
-SDPB_GPU_CHUNK_GB=0.3 sv real_lean_g$GMAX $GMAX $S 768 $F; cmp_it real_g1 real_lean_g$GMAX
+for g in ${REAL_GPUS-$GPUS}; do sv real_g$g $g $S 768 $F; [ $g = 1 ] || cmp_it real_g1 real_g$g; done
+GMAX=$(echo ${REAL_GPUS-$GPUS} | awk '{print $NF}')
+[ -n "$GMAX" ] && [ "${LEAN_TEST:-1}" = 1 ] && { SDPB_GPU_CHUNK_GB=0.3 sv real_lean_g$GMAX $GMAX $S 768 $F; cmp_it real_g1 real_lean_g$GMAX; }
 # 2. performance on synthetic SDPs
 for n in ${SIZES:-6 8 10 12}; do
     D=$W/synth_n$n

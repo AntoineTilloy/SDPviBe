@@ -1,21 +1,32 @@
 # SDPviBe
 
-**A GPU-accelerated, vibe-coded version of [SDPB](https://github.com/davidsd/sdpb)**, the semidefinite
-program solver of the conformal bootstrap.
+**A drop-in GPU replacement for [SDPB](https://github.com/davidsd/sdpb)**, the semidefinite program solver
+of the conformal bootstrap: the same `sdpb` command line, the same input (SDPB's `pmp2sdp` output), the same
+output files, checkpoints and terminate reasons, and the same algorithm iteration by iteration, running on
+gamer GPUs: **8.5-29x faster per iteration on one RTX 3090 than SDPB on 64 CPU cores, up to 88x on four**.
+
+![SDPviBe speedup over SDPB](docs/speedup_3090.svg)
+
+<sub>Time per iteration, SDPB 3.1 on 64 EPYC threads vs SDPviBe on 1, 2, 4 RTX 3090 (a ~$0.35/h rental
+each); identical SDP files; iterates agree with SDPB to 13-16 digits. Data: [docs/bench_3090.json](docs/bench_3090.json),
+details under [Performance](#performance).</sub>
+
+```bash
+pmp2sdp --precision 768 -i pmp.json -o sdp                    # SDPB's own tool, unchanged
+bin/sdpb -s sdp --precision 768 --findPrimalFeasible --writeSolution=x,y,z   # instead of `sdpb`
+bin/sdpb -s sdp --precision 768 --gpus 4 ...                  # several GPUs (one process each)
+```
+
+Point any pipeline that calls `sdpb` (e.g. hyperion's `sdpb` wrapper, your own scripts) at `bin/sdpb`: no MPI, no other change.
+SDPB's other tools (`pmp2sdp`, `spectrum`, `approx_objective`) work on its outputs as on SDPB's.
 
 SDPB is the work of David Simmons-Duffin, Walter Landry, Vasiliy Dommes and collaborators (see
 [Credits](#credits)); this project re-implements its interior-point algorithm in multiprecision arithmetic
-on consumer and datacenter GPUs. It is *vibe coded*: written almost entirely by an AI coding assistant
-(Claude, Anthropic) under the direction of Antoine Tilloy, and validated by comparing its iterations with
-official SDPB rather than by line-by-line human review. It is a research prototype, not a replacement for
-SDPB: use SDPB for results you publish, or cross-check with it.
-
-It reads the SDPs produced by SDPB's `pmp2sdp` and follows SDPB 3.1's algorithm step by step (same
-residues, Schur complement, Mehrotra predictor-corrector, step lengths and termination criteria), so its
-iterations can be compared one to one with SDPB's `iterations.json`.
-
-So far it has been validated against official SDPB on 3d Ising problems (below) and used for
-single-correlator and mixed (sigma, epsilon) Ising bounds and the stress-tensor system of Chang et al.
+on GPUs. It follows SDPB 3.1 step by step (same residues, Schur complement, Mehrotra predictor-corrector,
+step lengths and termination criteria), so its `iterations.json` can be compared line by line with SDPB's.
+It is *vibe coded*: written almost entirely by an AI coding assistant (Claude, Anthropic) under the
+direction of Antoine Tilloy, and validated by comparing its iterations and outputs with official SDPB
+(below) rather than by line-by-line human review. For results you publish, cross-check with SDPB.
 
 ## How it works
 
@@ -32,6 +43,8 @@ single-correlator and mixed (sigma, epsilon) Ising bounds and the stress-tensor 
   per-chunk array is either GPU-resident or kept in pinned host memory and prefetched on side CUDA
   streams. The Gram matrix Q is accumulated in residue form across chunks with a single reconstruction per
   iteration (`mpf.GramAcc`). A planner picks the largest chunks that fit the GPU.
+* **Several GPUs** (`dist.py`): one process per GPU; each owns a share of the chunks, per-chunk results are
+  all-gathered and reduced identically on every rank, Q's partial sums are exchanged with NCCL.
 
 ## Validation against official SDPB 3.1
 
@@ -76,15 +89,24 @@ Per iteration, against official SDPB on 56-64 cores (AMD EPYC):
 | mixed Ising nmax=18 (N=854, 1086 bits) | 36.68 s (64 cores) | 2.03 s (18x) |
 | stress-tensor system nmax=6 (N=742, 5x5 blocks) | 65.5 s (64 cores) | 3.8 s (17x; 129.5 min vs 8.4 min end to end) |
 
-One RTX 3090 (24 GB, a ~$0.35/h rental) against SDPB on the same box's 64 cores (EPYC), synthetic SDPs
-with the stress-tensor system's block structure (`tools/synth_sdp.py`, 832 bits, identical files for both;
-iterates agree to 1e-15):
+RTX 3090s (24 GB, ~$0.35/h per GPU on vast.ai) against SDPB on 64 EPYC threads, on synthetic SDPs with
+the stress-tensor system's block structure (`tools/synth_sdp.py`, 832 bits, the same files for both
+solvers) and a real mixed-Ising SDP; seconds per iteration (mean over iterations 2+). SDPB was run on a
+64-thread box, the GPUs on an 8x RTX 3090 box (PCIe, no NVLink); `vast/bench_vs_sdpb.sh`, `vast/mgpu_box.sh`:
 
-| nmax~ | N | SDP size | SDPB s/it | SDPviBe s/it | speedup |
-|---|---|---|---|---|---|
-| 6  | 742  | 1.8 GB  | 127 | 6.97 | 18x |
-| 8  | 1319 | 5.9 GB  | 351 | 17.5 | 20x |
-| 10 | 2061 | 14.7 GB | 968 | 37.6 | 26x |
+| problem | N | SDP size | SDPB 64 cores | 1 GPU | 2 GPUs | 4 GPUs | 8 GPUs |
+|---|---|---|---|---|---|---|---|
+| mixed Ising nmax=10 (real, 768 bits) | 274 | 0.3 GB | 10.2 | 1.20 (8.5x) | 0.92 (11x) | 0.93 (11x) | - |
+| stress-tensor nmax~6  | 742  | 1.8 GB  | 108 | 6.71 (16x) | 4.18 (26x) | 3.49 (31x) | 5.08 (21x) |
+| stress-tensor nmax~8  | 1319 | 5.9 GB  | 344 | 17.7 (19x) | 8.73 (39x) | 5.93 (58x) | 7.63 (45x) |
+| stress-tensor nmax~10 | 2061 | 14.7 GB | 964 | 33.7 (29x) | 18.0 (53x) | 11.0 (88x) | 15.0 (64x) |
+| stress-tensor nmax~12 | 2968 | 30.1 GB | not run | 77.5 | 42.5 | 24.3 | 56.3 |
+
+Multi-GPU runs agree with the single-GPU run to 15 digits or better (synthetic: 4 iterations; real: all 131
+iterations, same verdict). Scaling flattens beyond 4 GPUs at these sizes: the parts done by every rank
+(summing and factorising Q, the search-direction solves) and per-chunk launch overheads take over, and
+the work does not split evenly into the few large chunks; the synthetic runs on one GPU stream part of
+their data from host memory (24 GB card), several GPUs keep more of it resident.
 
 Streaming (synthetic SDPs with the stress-tensor system's block structure, scaled up; RTX PRO 6000 with
 96 GB, PCIe 5; "32 GB" is a hard cap emulating an RTX 5090):
@@ -141,11 +163,13 @@ bin/sdpb -s sdp --precision 768 --findPrimalFeasible --findDualFeasible --writeS
   directions. SDPB's own binary checkpoints (`checkpoint_<k>_<rank>`) are not readable.
 * **SIGTERM** stops at the next iteration, writes a checkpoint and the solution, exits with code 15.
 * **multi-GPU** (extension): `--gpus 2`, `--gpus 0,2` or `--gpus all` (default: `SDPVIBE_GPUS`, else one
-  GPU). The blocks are distributed over the GPUs (balanced by work); every pass of an iteration runs on
-  all GPUs at once, the per-block contributions are reduced on the first GPU in block order, and Q is
-  summed there and factorised. Results agree with a single-GPU run to working precision (like SDPB with
-  a different number of MPI processes) and are reproducible for a given GPU count; checkpoints do not
-  depend on it. Each GPU needs memory for Q, so this speeds up the block work, not the size limit.
+  GPU). One process per GPU, like SDPB's MPI ranks: the blocks are distributed over the processes
+  (balanced by work), each pass of an iteration runs on all GPUs at once, the per-block contributions
+  are exchanged and reduced in block order on every rank, Q's partial sums are exchanged with NCCL and Q
+  is factorised on every GPU. Results agree with a single-GPU run to working precision (usually
+  bitwise in the printed digits) and are reproducible for a given GPU count; checkpoints do not depend
+  on it. Every GPU holds Q, so this speeds up the block work, not the size limit; small problems gain
+  little (they are bound by kernel launches).
 
 GPU memory is planned from the card's total memory (results are reproducible run to run);
 `SDPB_GPU_MEM_GB=<GB>` plans for (and enforces) a smaller budget. Other environment variables:

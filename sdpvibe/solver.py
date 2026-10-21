@@ -235,6 +235,7 @@ class Layout:
     A_S, A_B, A_A, A_Q, A_X = 9.0, 3.0, 5.0, 7.0, 6.0
     A_QS, A_QC = 2.6, 9.0      # Q-related memory (x N^2 MPF entries): while chunks run (RNS accumulator /
                                # cholQ), and during chol(Q) itself (measured ~8.7x; nothing else live)
+    CMIN = 2e9                 # cost() units: ~0.5 s of GPU work on an RTX 3090
     PRIO = {"B": 5, "V": 5, "xs": 5, "cholS": 4, "ch": 4, "res": 3, "dir": 2, "dp": 2, "dc": 2,
             "AXI": 0.5, "AY": 0.5}                                      # ~ exposed transfers / iteration
 
@@ -271,9 +272,11 @@ class Layout:
         for j, b in enumerate(blocks): bydim.setdefault(b["dim"], []).append(j)
         for d in bydim: bydim[d].sort(key=lambda j: (blocks[j]["K"], max(blocks[j]["he"], blocks[j]["ho"])))
         fixed = self.A_Q * N * N * E + 1.2 * 2 ** 30                     # Q, cholQ; context, GEMM workspace
-        # multi-GPU: chunks of at most 1/ndev of the total work, assigned to ranks largest first
+        # multi-GPU: chunks of at most 1/(2 ndev) of the total work (balance), but not below CMIN (a chunk
+        # costs a fixed number of kernel launches), assigned to ranks largest first
         devices = self.devices
-        self.cmax = sum(self.cost(blocks, [j]) for j in range(len(blocks))) / len(devices) if len(devices) > 1 else float("inf")
+        tw = sum(self.cost(blocks, [j]) for j in range(len(blocks)))
+        self.cmax = max(tw / (2 * len(devices)), self.CMIN) if len(devices) > 1 else float("inf")
         whole = self._split(blocks, bydim, float("inf")) if len(devices) > 1 else [bydim[d] for d in sorted(bydim)]
         tot = lambda ch: sum(self.persistent(blocks, c) for c in ch) + max(self.ws(blocks, c) for c in ch) if ch else 0
         self.keep_pm = True
@@ -667,6 +670,7 @@ class Solver:
             for gi, objs in zip(mine, sdp.store.stream(items, [(n, mine[0]) for n in nxt])):
                 out[gi] = fn(gi, G[gi], dict(zip(names, objs)))
         if D.multi():
+            if hasattr(self, "timers"): self.timers("sync (wait for the slowest rank, gather)")
             for part in D.allgather({gi: _tree(out[gi], lambda t: t.cpu()) for gi in mine}):
                 for gi, r in part.items():
                     if gi not in mine: out[gi] = r
@@ -838,19 +842,20 @@ class Solver:
                 if not lean: ST.put(("Pm", gi), P)
                 return c
             for c in self._par(schur_q, ("AXI", "AY", "B"), nxt=D1): upd_cond(*c)
-            TM("chol(Q)")
+            TM("Q: CRT")
             if acc:
                 Q = QA.result()
                 flushes, loss = QA.flushes, QA.precision_loss()
                 if multi:                                                # sum over ranks (rank order), every rank
-                    Q = D.sum_mpf(Q, add)
+                    TM("Q: sum over ranks"); Q = D.sum_mpf(Q, add)
                     got = D.allgather((flushes, loss)); flushes = sum(f for f, _ in got); loss = max(l for _, l in got)
                     D.allreduce_max_(QA.Tmax)                            # combined column maxima -> next reference
                 self.q_flushes = getattr(self, "q_flushes", 0) + flushes
                 if loss > 28: self.q_lossy = getattr(self, "q_lossy", 0) + 1     # reference > 28 bits above the column max
                 self._q_ref = QA.next_reference()
+                TM("chol(Q)")
             else:
-                Q = Qd[0]
+                Q = Qd[0]; TM("chol(Q)")
             del QA, Qd
             if self._q_block(Q):                                         # tiled: ~Q/2 instead of ~9 Q
                 from .blockchol import BlockChol
