@@ -1,7 +1,8 @@
 # SDPviBe
 
-**A drop-in GPU replacement for [SDPB](https://github.com/davidsd/sdpb)**, the semidefinite program solver
-of the conformal bootstrap: the same `sdpb` command line, the same input (SDPB's `pmp2sdp` output), the same
+**A vibe-coded, drop-in GPU replacement for [SDPB](https://github.com/davidsd/sdpb)**, the semidefinite
+program solver of the conformal bootstrap, written almost entirely by an AI coding assistant (Claude,
+Anthropic) under the direction of Antoine Tilloy and validated against official SDPB. The same `sdpb` command line, the same input (SDPB's `pmp2sdp` output), the same
 output files, checkpoints and terminate reasons, and the same algorithm iteration by iteration, running on
 gamer GPUs: **8.5-29x faster per iteration on one RTX 3090 than SDPB on 64 CPU cores, up to 88x on four**
 (17-70x on one H100).
