@@ -3,12 +3,13 @@
 **A drop-in GPU replacement for [SDPB](https://github.com/davidsd/sdpb)**, the semidefinite program solver
 of the conformal bootstrap: the same `sdpb` command line, the same input (SDPB's `pmp2sdp` output), the same
 output files, checkpoints and terminate reasons, and the same algorithm iteration by iteration, running on
-gamer GPUs: **8.5-29x faster per iteration on one RTX 3090 than SDPB on 64 CPU cores, up to 88x on four**.
+gamer GPUs: **8.5-29x faster per iteration on one RTX 3090 than SDPB on 64 CPU cores, up to 88x on four**
+(17-70x on one H100).
 
 ![SDPviBe speedup over SDPB](docs/speedup_3090.svg)
 
 <sub>Time per iteration, SDPB 3.1 on 64 EPYC threads vs SDPviBe on 1, 2, 4 RTX 3090 (a ~$0.35/h rental
-each); identical SDP files; iterates agree with SDPB to 13-16 digits. Data: [docs/bench_3090.json](docs/bench_3090.json),
+each) and one H100 80GB SXM (~$2.2/h); identical SDP files; iterates agree with SDPB to 13-16 digits. Data: [docs/bench_3090.json](docs/bench_3090.json),
 details under [Performance](#performance).</sub>
 
 ```bash
@@ -94,13 +95,21 @@ the stress-tensor system's block structure (`tools/synth_sdp.py`, 832 bits, the 
 solvers) and a real mixed-Ising SDP; seconds per iteration (mean over iterations 2+). SDPB was run on a
 64-thread box, the GPUs on an 8x RTX 3090 box (PCIe, no NVLink); `vast/bench_vs_sdpb.sh`, `vast/mgpu_box.sh`:
 
-| problem | N | SDP size | SDPB 64 cores | 1 GPU | 2 GPUs | 4 GPUs | 8 GPUs |
-|---|---|---|---|---|---|---|---|
-| mixed Ising nmax=10 (real, 768 bits) | 274 | 0.3 GB | 10.2 | 1.20 (8.5x) | 0.92 (11x) | 0.93 (11x) | - |
-| stress-tensor nmax~6  | 742  | 1.8 GB  | 108 | 6.71 (16x) | 4.18 (26x) | 3.49 (31x) | 5.08 (21x) |
-| stress-tensor nmax~8  | 1319 | 5.9 GB  | 344 | 17.7 (19x) | 8.73 (39x) | 5.93 (58x) | 7.63 (45x) |
-| stress-tensor nmax~10 | 2061 | 14.7 GB | 964 | 33.7 (29x) | 18.0 (53x) | 11.0 (88x) | 15.0 (64x) |
-| stress-tensor nmax~12 | 2968 | 30.1 GB | not run | 77.5 | 42.5 | 24.3 | 56.3 |
+| problem | N | SDP size | SDPB 64 cores | 1x 3090 | 2x 3090 | 4x 3090 | 8x 3090 | 1x H100 |
+|---|---|---|---|---|---|---|---|---|
+| mixed Ising nmax=10 (real, 768 bits) | 274 | 0.3 GB | 10.2 | 1.20 (8.5x) | 0.92 (11x) | 0.93 (11x) | - | 0.60 (17x) |
+| stress-tensor nmax~6  | 742  | 1.8 GB  | 108 | 6.71 (16x) | 4.18 (26x) | 3.49 (31x) | 5.08 (21x) | 3.15 (34x) |
+| stress-tensor nmax~8  | 1319 | 5.9 GB  | 344 | 17.7 (19x) | 8.73 (39x) | 5.93 (58x) | 7.63 (45x) | 6.81 (51x) |
+| stress-tensor nmax~10 | 2061 | 14.7 GB | 964 | 33.7 (29x) | 18.0 (53x) | 11.0 (88x) | 15.0 (64x) | 13.8 (70x) |
+| stress-tensor nmax~12 | 2968 | 30.1 GB | not run | 77.5 | 42.5 | 24.3 | 56.3 | 26.5 |
+| stress-tensor nmax~14 | 4040 | 54.3 GB | not run | - | - | - | - | 42.8 |
+
+H100: 80 GB HBM3 SXM on a 1.5 TB-RAM host (vast.ai); it runs unchanged (Hopper, sm_90) and its real-SDP run
+has the same verdict and 131 iterations as the 3090 run, agreeing to 13 digits (different GPUs round some
+reductions differently; the agreement level of SDPviBe vs SDPB). One H100 is 2.1-2.9x one 3090, about four
+3090s, and handles nmax~14 alone (86 GB streamed from host memory per iteration; 42.8 s/it, vs 52.0 on an RTX
+PRO 6000 96 GB). Per iteration, rented 3090s are the cheapest: at nmax~10-12 one 3090 costs ~$0.003-0.008
+per iteration, four 3090s ~$0.004-0.009, an H100 ~$0.009-0.016 (at $0.35 / $1.40 / $2.2 per hour).
 
 Multi-GPU runs agree with the single-GPU run to 15 digits or better (synthetic: 4 iterations; real: all 131
 iterations, same verdict). Scaling flattens beyond 4 GPUs at these sizes: the parts done by every rank
@@ -123,7 +132,7 @@ Details, history and design notes: [docs/DEVLOG.md](docs/DEVLOG.md).
 
 ## Install
 
-Needs an NVIDIA GPU (developed on Ampere and Blackwell), CUDA, PyTorch with Triton, and CuPy:
+Needs an NVIDIA GPU (developed on Ampere and Blackwell, also tested on Hopper), CUDA, PyTorch with Triton, and CuPy:
 
 ```bash
 pip install torch numpy mpmath
