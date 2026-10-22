@@ -424,9 +424,10 @@ def gemm(A, B, transA=False, transB=False):
                 G = min(GR, R.n - g0)
                 Ah, Al = R.residues(Av, k0, kk, g0, G)
                 Bh, Bl = R.residues(Bj, k0, kk, g0, G)
+                kp = Ah.shape[-1]                                    # kk padded to a multiple of 16
                 _bgemm_kernel[(triton.cdiv(M, BMk), triton.cdiv(jw, BMk), G * nb)](
-                    Ah, Al, Bh, Bl, acc, R.m32, R.mi32, R.c14, g0, nb, M, jw, kk,
-                    BM=BMk, BN=BMk, BK=32 if kk < 64 else 64, num_warps=8 if BMk == 128 else 4, num_stages=3)
+                    Ah, Al, Bh, Bl, acc, R.m32, R.mi32, R.c14, g0, nb, M, jw, kp,
+                    BM=BMk, BN=BMk, BK=32 if kp < 64 else 64, num_warps=8 if BMk == 128 else 4, num_stages=3)
                 del Ah, Al, Bh, Bl
         rows = nb * M
         cb = max(1, min(jw, 65536 // max(rows, 1)))
@@ -577,9 +578,10 @@ class GramAcc:
             for g0 in range(0, R.n, GR):
                 G = min(GR, R.n - g0)
                 Ah, Al = R.residues(Xv, k0, kk, g0, G)
+                kp = Ah.shape[-1]                                    # kk padded to a multiple of 16
                 _syrk_lower_kernel[(triton.cdiv(N, BM), triton.cdiv(N, BM), G)](
-                    Ah, Al, self.acc, R.m32, R.mi32, R.c14, g0, N, kk,
-                    BM=BM, BK=32 if kk < 64 else 64, num_warps=8 if BM == 128 else 4, num_stages=3)
+                    Ah, Al, self.acc, R.m32, R.mi32, R.c14, g0, N, kp,
+                    BM=BM, BK=32 if kp < 64 else 64, num_warps=8 if BM == 128 else 4, num_stages=3)
                 del Ah, Al
 
     def _crt(self):

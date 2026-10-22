@@ -151,9 +151,10 @@ def bgemm_nt(A, Bt, out_exp="col", kc=4096, bt_rowexp=None):
             G = min(GR, R.n - g0)
             Ah, Al = R.residues(Av, k0, kk, g0, G)
             Bh, Bl = (Ah, Al) if same else R.residues(Bv, k0, kk, g0, G)
+            kp = Ah.shape[-1]                                        # kk padded to a multiple of 16
             _bgemm_kernel[(triton.cdiv(M, BM), triton.cdiv(N, BN), G * nb)](
-                Ah, Al, Bh, Bl, acc, R.m32, R.mi32, R.c14, g0, nb, M, N, kk,
-                BM=BM, BN=BN, BK=32 if kk < 64 else 64, num_warps=warps, num_stages=3)
+                Ah, Al, Bh, Bl, acc, R.m32, R.mi32, R.c14, g0, nb, M, N, kp,
+                BM=BM, BN=BN, BK=32 if kp < 64 else 64, num_warps=warps, num_stages=3)
             del Ah, Al, Bh, Bl
     # exponent of the exact product, per (block, column)
     eB = Bt.exp if bt_rowexp is None else bt_rowexp
