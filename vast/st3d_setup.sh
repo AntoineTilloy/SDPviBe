@@ -90,7 +90,7 @@ config = (defaultHyperionConfig "/root/hyp") { emailAddr = Nothing }
 staticConfig :: HyperionStaticConfig
 staticConfig = defaultHyperionStaticConfig
 EOF
-NP=${SDPB_RANKS:-$(nproc)}
+NP=${SDPB_RANKS:-$(lscpu -p=Core,Socket | grep -v "^#" | sort -u | wc -l)}   # physical cores: mpirun refuses more ranks than cores
 cat > $C/blocks_3d.sh <<EOF
 #!/bin/bash
 LD_PRELOAD=$JE exec $B3/usr/local/bin/blocks_3d "\$@"
@@ -101,6 +101,8 @@ LD_PRELOAD=$JE exec $PWD/tools/sb_root/usr/local/bin/scalar_blocks "\$@"
 EOF
 for s in pmp2sdp srun_pmp2sdp; do cat > $C/$s.sh <<EOF
 #!/bin/bash
+# fake Slurm environment: OpenMPI aborts on it (SLURM_TASKS_PER_NODE missing)
+for v in \$(env | grep -o '^SLURM[A-Z_]*'); do unset \$v; done
 export OPAL_PREFIX=$R/usr OMPI_ALLOW_RUN_AS_ROOT=1 OMPI_ALLOW_RUN_AS_ROOT_CONFIRM=1
 echo pmp2sdp "\$@" >> /root/hyp/pmp2sdp_calls.log
 $R/usr/bin/mpirun --allow-run-as-root -n $NP $R/usr/local/bin/pmp2sdp "\$@"
