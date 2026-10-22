@@ -9,7 +9,9 @@ echo "driver supports CUDA ${CUDA}"
 if python3 -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
     TV=$(python3 -c "import torch; print(torch.version.cuda.split('.')[0])")
     mkdir -p ~/venv/bin && echo "# image python already has torch" > ~/venv/bin/activate
-    python3 -m pip install -q --break-system-packages "cupy-cuda${TV}x" numpy scipy mpmath gmpy2   # throwaway container
+    for i in 1 2 3; do   # throwaway container; retries: a flaky download once left cupy missing
+        python3 -m pip install -q --break-system-packages --retries 10 --timeout 60 "cupy-cuda${TV}x" numpy scipy mpmath gmpy2 && break
+    done
 else
     python3 -m venv ~/venv 2>/dev/null || { apt-get update -qq && apt-get install -y -qq python3-venv && python3 -m venv ~/venv; }
     . ~/venv/bin/activate

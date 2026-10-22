@@ -205,6 +205,12 @@ cpu_baseline/  GMP reference for the multiprecision kernels
 docs/      development log
 ```
 
+**Conformal blocks on the GPU**: the GPU replacement for `blocks_3d` (batched multiprecision radial
+recursion, numerators, pole shifting, write_output; a drop-in `blocks_3d` command writing the same JSON
+files) lives in its own package, [BlocksviBe](https://github.com/AntoineTilloy/BlocksviBe), like blocks_3d
+is separate from SDPB. It uses SDPviBe's multiprecision arithmetic (`sdpvibe.mpf`, `sdpvibe.rns`), not the
+solver. Design notes and measurements: BlocksviBe's `docs/BLOCKS_PLAN.md`.
+
 ## Limitations
 
 * Multi-GPU replicates Q on every GPU and factorises it on the first one (no distributed Cholesky yet).

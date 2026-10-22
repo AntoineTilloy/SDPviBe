@@ -123,6 +123,9 @@ CPU boxes for the blocks. H100/H200 are untested (likely similar performance per
 5. **Faster kernels**: the fused INT8 Q kernel prototyped earlier (~5x the in-solver rate); larger diagonal
    tiles for the latency-bound Cholesky/triangular solves of S; these dominate at nmax=22-26.
 6. **Blocks**: Delta_epsilon interpolation of the <TTT x> family; longer term a GPU blocks_3d.
+   Superseded by BlocksviBe's docs/BLOCKS_PLAN.md (the GPU blocks_3d moved to its own package,
+   <https://github.com/AntoineTilloy/BlocksviBe>): the official blocks_3d image lost 20-40x to musl's malloc
+   (fixed with jemalloc in vast/st3d_setup.sh); the whole blocks_3d chain runs on the GPU there.
 7. **Measure one real nmax=22 SDP** (shape, iteration count of a hot-started OPE step) before committing
    money: it fixes the +-50% above. Cheapest route: their pipeline on a many-core CPU box with a budget-
    derived deadline and periodic log pulls (the nmax=10 attempt here lost its logs).
