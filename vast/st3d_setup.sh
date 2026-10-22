@@ -30,6 +30,11 @@ log "blocks_3d image"
 B3=$PWD/tools/b3d_root
 echo "$B3/usr/local/lib" >> /etc/ld-musl-x86_64.path; echo "$B3/usr/lib" >> /etc/ld-musl-x86_64.path
 ls $B3/usr/local/bin
+# musl's malloc makes the official (Alpine) blocks_3d image 20-40x slower with threads
+# (docs/BLOCKS_PLAN.md); preload Alpine's jemalloc (identical outputs)
+JE=$PWD/tools/apk/usr/lib/libjemalloc.so.2
+[ -f $JE ] || { mkdir -p tools/apk && curl -s https://dl-cdn.alpinelinux.org/alpine/v3.18/main/x86_64/jemalloc-5.3.0-r2.apk \
+    -o tools/apk/jemalloc.apk && tar -xzf tools/apk/jemalloc.apk -C tools/apk 2> /dev/null; }
 
 log "single-node slurm: NOT possible in vast containers (read-only cgroupfs) -> use vast/fake_slurm.sh"
 if false; then
@@ -88,11 +93,11 @@ EOF
 NP=${SDPB_RANKS:-$(nproc)}
 cat > $C/blocks_3d.sh <<EOF
 #!/bin/bash
-$B3/usr/local/bin/blocks_3d "\$@"
+LD_PRELOAD=$JE exec $B3/usr/local/bin/blocks_3d "\$@"
 EOF
 cat > $C/scalar_blocks.sh <<EOF
 #!/bin/bash
-$PWD/tools/sb_root/usr/local/bin/scalar_blocks "\$@"
+LD_PRELOAD=$JE exec $PWD/tools/sb_root/usr/local/bin/scalar_blocks "\$@"
 EOF
 for s in pmp2sdp srun_pmp2sdp; do cat > $C/$s.sh <<EOF
 #!/bin/bash

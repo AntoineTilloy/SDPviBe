@@ -14,3 +14,5 @@ tools/sdpb_env_native.sh
 *.pkl
 *.pt
 cpu_baseline/mpf_baseline
+tools/b3d_root/
+tools/apk/
