@@ -46,16 +46,18 @@ def _fmod(x, m, mi):
 
 @triton.jit
 def _residue_kernel(X, Tlo, Thi, C1, C2, mods, minv, Rhi, Rlo,
-                    rows, kc, ld, k0, plane, NB: tl.constexpr, G: tl.constexpr, BR: tl.constexpr, BK: tl.constexpr):
+                    rows, kc, kp, ld, k0, plane, NB: tl.constexpr, G: tl.constexpr, BR: tl.constexpr, BK: tl.constexpr):
     """X: int8 view of limb planes (L, rows, ld) int32: byte t of limb l of entry (i, k) is at
-    4*((l*rows + i)*ld + k0 + k) + t. Output Rhi/Rlo: (G, rows, kc) int8, r = 128 hi + lo."""
+    4*((l*rows + i)*ld + k0 + k) + t. Output Rhi/Rlo: (G, rows, kp) int8, r = 128 hi + lo; columns
+    kc <= k < kp are zero padding (residues of 0)."""
     pid = tl.program_id(0)
     grp = tl.program_id(1)
     Tlo += grp * G * NB; Thi += grp * G * NB; C1 += grp * G; C2 += grp * G; mods += grp * G; minv += grp * G
-    Rhi += grp.to(tl.int64) * G * rows * kc; Rlo += grp.to(tl.int64) * G * rows * kc
-    e = pid * BR + tl.arange(0, BR)                      # entry index in [0, rows*kc)
-    valid = e < rows * kc
-    i = e // kc; k = e % kc
+    Rhi += grp.to(tl.int64) * G * rows * kp; Rlo += grp.to(tl.int64) * G * rows * kp
+    e = pid * BR + tl.arange(0, BR)                      # entry index in [0, rows*kp)
+    valid = e < rows * kp
+    i = e // kp; k = e % kp
+    ld_ok = valid & (k < kc)                             # padding: zero bytes, residue 0
     base = (i.to(tl.int64) * ld + k0 + k) * 4
     gs = tl.arange(0, G)
     acc_lo = tl.zeros((BR, G), dtype=tl.int32)
@@ -63,13 +65,13 @@ def _residue_kernel(X, Tlo, Thi, C1, C2, mods, minv, Rhi, Rlo,
     for b0 in tl.static_range(0, NB, BK):
         bs = b0 + tl.arange(0, BK)
         x = tl.load(X + base[:, None] + (bs // 4)[None, :].to(tl.int64) * plane + (bs % 4)[None, :],
-                    mask=valid[:, None] & (bs[None, :] < NB), other=0)
+                    mask=ld_ok[:, None] & (bs[None, :] < NB), other=0)
         x = x ^ -128                                       # unsigned byte u -> u - 128 (signed)
         t_l = tl.load(Tlo + gs[None, :] * NB + bs[:, None], mask=bs[:, None] < NB, other=0)
         t_h = tl.load(Thi + gs[None, :] * NB + bs[:, None], mask=bs[:, None] < NB, other=0)
         acc_lo = tl.dot(x, t_l, acc_lo, out_dtype=tl.int32)
         acc_hi = tl.dot(x, t_h, acc_hi, out_dtype=tl.int32)
-    top = tl.load(X + base + (NB // 4 - 1) * plane.to(tl.int64) + 3, mask=valid, other=0)
+    top = tl.load(X + base + (NB // 4 - 1) * plane.to(tl.int64) + 3, mask=ld_ok, other=0)
     neg = (top < 0).to(tl.int32)[:, None]
     m = tl.load(mods + gs)[None, :]; mi = tl.load(minv + gs)[None, :]
     c1 = tl.load(C1 + gs)[None, :]; c2 = tl.load(C2 + gs)[None, :]
@@ -77,7 +79,7 @@ def _residue_kernel(X, Tlo, Thi, C1, C2, mods, minv, Rhi, Rlo,
     r = tl.where(r > m // 2, r - m, r)
     lo = ((r + 64) & 127) - 64
     hi = (r - lo) >> 7
-    off = gs[None, :].to(tl.int64) * (rows * kc) + e[:, None]
+    off = gs[None, :].to(tl.int64) * (rows * kp) + e[:, None]
     tl.store(Rhi + off, hi.to(tl.int8), mask=valid[:, None])
     tl.store(Rlo + off, lo.to(tl.int8), mask=valid[:, None])
 
@@ -147,18 +149,25 @@ class RNS:
         self.minv_d = (1.0 / self.m32.double())[:, None]
         self.inv32 = self.inv[:, 0].contiguous()
 
-    # ---- step 1: residues of rows x kc entries (limbs) -> (n, rows, kc) hi, lo
+    # ---- step 1: residues of rows x kc entries (limbs) -> (n, rows, kp) hi, lo
+    KPAD = 16
+
     def residues(self, X, k0, kc, g0=0, G=None):
-        """X: (L, rows, K) int32 limb planes (contiguous). Residues of X[:, :, k0:k0+kc], moduli g0..g0+G."""
+        """X: (L, rows, K) int32 limb planes (contiguous). Residues of X[:, :, k0:k0+kc], moduli g0..g0+G,
+        as (G, rows, kp) int8 hi / lo with the inner dimension zero-padded to kp = kc rounded up to a
+        multiple of 16: GEMM kernels take kp (Rhi.shape[-1]) as their inner size.  Triton specialises
+        integer arguments divisible by 16; for any other inner size the kernels' int8 tile loads are
+        not vectorised and the residue GEMM runs ~16x slower (zero residues leave the products exact)."""
         L, rows, K = X.shape
         G = G or self.n
+        kp = -(-kc // self.KPAD) * self.KPAD
         Xb = X.view(torch.int8)
-        Rhi = torch.empty((G, rows, kc), dtype=torch.int8, device=dev); Rlo = torch.empty_like(Rhi)
+        Rhi = torch.empty((G, rows, kp), dtype=torch.int8, device=dev); Rlo = torch.empty_like(Rhi)
         BR = 128; GG = self.G
-        _residue_kernel[(triton.cdiv(rows * kc, BR), G // GG)](
+        _residue_kernel[(triton.cdiv(rows * kp, BR), G // GG)](
             Xb, self.Tlo[g0:], self.Thi[g0:], self.C1[g0:], self.C2[g0:],
             self.m32[g0:], self.mi32[g0:], Rhi, Rlo,
-            rows, kc, K, k0, rows * K * 4, NB=self.NB, G=GG, BR=BR, BK=32, num_warps=4)
+            rows, kc, kp, K, k0, rows * K * 4, NB=self.NB, G=GG, BR=BR, BK=32, num_warps=4)
         return Rhi, Rlo
 
     # ---- step 2: accumulate residues of A @ Bt^T
