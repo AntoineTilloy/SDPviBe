@@ -5,6 +5,11 @@ This study compares the optimized solver with SDPviBe commit
 It measures complete iterations, including host work and streaming. The target
 was a twofold improvement without reducing precision or changing SDPB's algorithm.
 
+A subsequent [README benchmark rerun](BENCHMARK_20261024.md) covers one, two and
+four RTX 3090s and an H100, with serialized inputs and additional same-host
+baseline comparisons. The measurements below retain this original study's
+hardware, input-generation method and timing protocol.
+
 ## Complete-iteration measurements
 
 The measured speedup is **1.20–1.26x**, below the twofold target. GPU memory use

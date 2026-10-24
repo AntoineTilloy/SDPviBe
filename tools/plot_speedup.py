@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 d = json.load(open(sys.argv[1]))
 P = d["problems"]
 series = d.get("series") or [{"key": str(g), "label": f"{g} x {d['gpu']}"} for g in sorted({int(g) for p in P for g in p["gpu_s"]})]
-fig, ax = plt.subplots(figsize=(9, 4.4), dpi=100)
+fig, ax = plt.subplots(figsize=(9, 4.8 if any(p.get("cpu_label") for p in P) else 4.4), dpi=100)
 w = 0.8 / len(series)
 colors = ["#a6d96a", "#66bd63", "#1a9850", "#3b6fb6", "#5e3c99"]
 top = 0
@@ -26,7 +26,8 @@ for k, sr in enumerate(series):
         top = max(top, y)
 ax.axhline(1, color="#888", lw=0.8)
 ax.set_xticks(range(len(P)))
-ax.set_xticklabels([f"{p['name']}\nN={p['N']}\nSDPB {p['sdpb_s']:.0f} s/it" for p in P], fontsize=9)
+ax.set_xticklabels([f"{p['name']}\nN={p['N']}\nSDPB {p['sdpb_s']:.1f} s/it"
+                    + (f"\n{p['cpu_label']}" if p.get("cpu_label") else "") for p in P], fontsize=8)
 ax.set_ylabel(f"speedup per iteration vs {d['sdpb']}", fontsize=9)
 ax.set_ylim(0, top * 1.15)
 ax.set_title(d.get("title", "SDPviBe vs SDPB"), fontsize=11)

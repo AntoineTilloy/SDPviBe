@@ -4,14 +4,15 @@
 program solver of the conformal bootstrap, written almost entirely by an AI coding assistant (Claude,
 Anthropic) under the direction of Antoine Tilloy and validated against official SDPB. The same `sdpb` command line, the same input (SDPB's `pmp2sdp` output), the same
 output files, checkpoints and terminate reasons, and the same algorithm iteration by iteration, running on
-gamer GPUs: **8.5-29x faster per iteration on one RTX 3090 than SDPB on 64 CPU cores, up to 88x on four**
-(17-70x on one H100).
+gamer GPUs. The [latest benchmark](docs/BENCHMARK_20261024.md) measures one, two and four RTX 3090s
+and one H100, with unchanged precision and stopping rules.
 
 ![SDPviBe speedup over SDPB](docs/speedup_3090.svg)
 
-<sub>Time per iteration, SDPB 3.1 on 64 EPYC threads vs SDPviBe on 1, 2, 4 RTX 3090 (a ~$0.35/h rental
-each) and one H100 80GB SXM (~$2.2/h); identical SDP files; iterates agree with SDPB to 13-16 digits. Data: [docs/bench_3090.json](docs/bench_3090.json),
-details under [Performance](#performance).</sub>
+<sub>GPU measurements refreshed October 24, 2026; mean time over iterations 2 onward.
+All GPU columns use identical SDP files. The real case has a fresh SDPB 3.1 reference on 16 CPU ranks;
+synthetic ratios use historical 64-thread CPU timings and are indicative.
+[Data](docs/bench_3090.json) · [Protocol and validation](docs/BENCHMARK_20261024.md).</sub>
 
 ```bash
 pmp2sdp --precision 768 -i pmp.json -o sdp                    # SDPB's own tool, unchanged
@@ -50,6 +51,10 @@ direction of Antoine Tilloy, and validated by comparing its iterations and outpu
 
 ## Validation against official SDPB 3.1
 
+The optimized arithmetic passed the [correctness and compatibility checks](docs/PERFORMANCE_3090.md#correctness-and-compatibility)
+and the [new 1/2/4-GPU and H100 comparisons](docs/BENCHMARK_20261024.md#numerical-validation).
+The validation measurements below document the earlier input fixtures.
+
 Iterates (mu, objectives, errors, step lengths) agree with SDPB to 1e-13 to 1e-15 relative, with the same
 iteration counts and verdicts:
 SDPB's example; single-correlator Ising nmax=6; mixed sigma-epsilon Ising nmax=6, 10, 14, 18 (first 20
@@ -85,7 +90,7 @@ machine compiles kernels, ~40 s).
 For the October 2026 single-3090 optimization study (profiling, same-GPU before/after
 timings, numerical checks and reproduction commands), see [the detailed report](docs/PERFORMANCE_3090.md).
 
-Per iteration, against official SDPB on 56-64 cores (AMD EPYC):
+Earlier RTX 5090 measurements, per iteration against official SDPB on 56-64 cores (AMD EPYC):
 
 | problem | SDPB (CPU) | SDPviBe (one RTX 5090) |
 |---|---|---|
@@ -94,34 +99,34 @@ Per iteration, against official SDPB on 56-64 cores (AMD EPYC):
 | mixed Ising nmax=18 (N=854, 1086 bits) | 36.68 s (64 cores) | 2.03 s (18x) |
 | stress-tensor system nmax=6 (N=742, 5x5 blocks) | 65.5 s (64 cores) | 3.8 s (17x; 129.5 min vs 8.4 min end to end) |
 
-RTX 3090s (24 GB, ~$0.35/h per GPU on vast.ai) against SDPB on 64 EPYC threads, on synthetic SDPs with
-the stress-tensor system's block structure (`tools/synth_sdp.py`, 832 bits, the same files for both
-solvers) and a real mixed-Ising SDP; seconds per iteration (mean over iterations 2+). SDPB was run on a
-64-thread box, the GPUs on an 8x RTX 3090 box (PCIe, no NVLink); `vast/bench_vs_sdpb.sh`, `vast/mgpu_box.sh`:
+**Refreshed October 24, 2026:** one, two and four RTX 3090s (24 GiB each) and one H100 80 GB SXM.
+Seconds per iteration, mean over iterations 2 onward; six iterations for synthetic stress-tensor-shaped
+SDPs at 832 bits, and a full solve for the real mixed-Ising case at 768 bits. All current GPU columns
+use hash-identical input files. The real CPU reference is a fresh SDPB 3.1 run on 16 Xeon 8480+ ranks.
+The synthetic CPU references are historical 64-thread EPYC timings: their original input hashes are
+unavailable, so those CPU/GPU ratios are indicative.
 
-| problem | N | SDP size | SDPB 64 cores | 1x 3090 | 2x 3090 | 4x 3090 | 8x 3090 | 1x H100 |
-|---|---|---|---|---|---|---|---|---|
-| mixed Ising nmax=10 (real, 768 bits) | 274 | 0.3 GB | 10.2 | 1.20 (8.5x) | 0.92 (11x) | 0.93 (11x) | - | 0.60 (17x) |
-| stress-tensor nmax~6  | 742  | 1.8 GB  | 108 | 6.71 (16x) | 4.18 (26x) | 3.49 (31x) | 5.08 (21x) | 3.15 (34x) |
-| stress-tensor nmax~8  | 1319 | 5.9 GB  | 344 | 17.7 (19x) | 8.73 (39x) | 5.93 (58x) | 7.63 (45x) | 6.81 (51x) |
-| stress-tensor nmax~10 | 2061 | 14.7 GB | 964 | 33.7 (29x) | 18.0 (53x) | 11.0 (88x) | 15.0 (64x) | 13.8 (70x) |
-| stress-tensor nmax~12 | 2968 | 30.1 GB | not run | 77.5 | 42.5 | 24.3 | 56.3 | 26.5 |
-| stress-tensor nmax~14 | 4040 | 54.3 GB | not run | - | - | - | - | 42.8 |
+| problem | N | SDP size | SDPB CPU reference | 1× 3090 | 2× 3090 | 4× 3090 | 1× H100 SXM |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| mixed Ising nmax=10 (real, 768 bits) | 274 | 0.1 GiB | 10.15 (16 ranks) | 0.82 (12.4×) | 0.58 (17.4×) | 0.60 (16.8×) | 0.55 (18.6×) |
+| stress-tensor nmax~6 | 742 | 1.8 GiB | 108 (64 threads, historical) | 5.13 (21.1×) | 3.40 (31.8×) | 2.81 (38.4×) | 2.56 (42.2×) |
+| stress-tensor nmax~8 | 1319 | 5.9 GiB | 344 (64 threads, historical) | 12.80 (26.9×) | 6.57 (52.4×) | 4.13 (83.2×) | 4.95 (69.5×) |
+| stress-tensor nmax~10 | 2061 | 14.7 GiB | 964 (64 threads, historical) | 24.40 (39.5×) | 13.52 (71.3×) | 8.17 (117.9×) | 11.30 (85.3×) |
+| stress-tensor nmax~12 | 2968 | 30.1 GiB | not run | 49.80 | 27.10 | 15.09 | 18.62 |
+| stress-tensor nmax~14 | 4040 | 54.3 GiB | not run | — | — | — | 29.75 |
 
-H100: 80 GB HBM3 SXM on a 1.5 TB-RAM host (vast.ai); it runs unchanged (Hopper, sm_90) and its real-SDP run
-has the same verdict and 131 iterations as the 3090 run, agreeing to 13 digits (different GPUs round some
-reductions differently; the agreement level of SDPviBe vs SDPB). One H100 is 2.1-2.9x one 3090, about four
-3090s, and handles nmax~14 alone (86 GB streamed from host memory per iteration; 42.8 s/it, vs 52.0 on an RTX
-PRO 6000 96 GB). Per iteration, rented 3090s are the cheapest: at nmax~10-12 one 3090 costs ~$0.003-0.008
-per iteration, four 3090s ~$0.004-0.009, an H100 ~$0.009-0.016 (at $0.35 / $1.40 / $2.2 per hour).
+The RTX host has an EPYC 7282, 256 GB RAM and PCIe 3 ×16 connections without NVLink; the H100 is a
+700 W SXM model. The regenerated real input has 64 positivity blocks and differs from the earlier
+131-iteration fixture. Current results, numerical agreement, same-host baseline comparisons and VRAM
+measurements are documented in the [benchmark report](docs/BENCHMARK_20261024.md).
 
-Multi-GPU runs agree with the single-GPU run to 15 digits or better (synthetic: 4 iterations; real: all 131
-iterations, same verdict). Scaling flattens beyond 4 GPUs at these sizes: the parts done by every rank
-(summing and factorising Q, the search-direction solves) and per-chunk launch overheads take over, and
-the work does not split evenly into the few large chunks; the synthetic runs on one GPU stream part of
-their data from host memory (24 GB card), several GPUs keep more of it resident.
+Four GPUs reduce the N=2061 iteration from 24.40 to 8.17 seconds. The small real case measured slightly
+faster on two 3090s than four. Communication and work repeated on each GPU limit the available scaling. Larger cases also
+benefit from keeping more block data resident across several 24 GiB cards. One H100 runs the largest
+listed case, N=4040, at 29.75 seconds per iteration. These are throughput measurements, not claims of
+faster convergence; precision and termination criteria are unchanged.
 
-Streaming (synthetic SDPs with the stress-tensor system's block structure, scaled up; RTX PRO 6000 with
+Earlier streaming measurements (synthetic SDPs with the stress-tensor system's block structure, scaled up; RTX PRO 6000 with
 96 GB, PCIe 5; "32 GB" is a hard cap emulating an RTX 5090):
 
 | nmax~ | N | data in host RAM | 96 GB card | 32 GB cap |
