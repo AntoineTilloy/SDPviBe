@@ -19,6 +19,16 @@ BB = 256
 
 # ------------------------------------------------------------------ rounding shift
 @triton.jit
+def _shifted_word(X, e, B, q, r, ext, k, L: tl.constexpr, ok):
+    """One word of an arithmetic right shift by 32*q+r (q may be negative)."""
+    i = q + k
+    lo = tl.load(X + i * B + e, mask=ok & (i >= 0) & (i < L), other=0).to(tl.int64) & 0xffffffff
+    hi = tl.load(X + (i + 1) * B + e, mask=ok & (i + 1 >= 0) & (i + 1 < L), other=0).to(tl.int64) & 0xffffffff
+    lo = tl.where(i >= L, ext, lo); hi = tl.where(i + 1 >= L, ext, hi)
+    return ((lo | (hi << 32)) >> r) & 0xffffffff
+
+
+@triton.jit
 def _shift_round_kernel(X, S, OUT, FLAG, B, LIN: tl.constexpr, LOUT: tl.constexpr, BB: tl.constexpr,
                         PERENTRY: tl.constexpr):
     pid = tl.program_id(0)
@@ -37,11 +47,7 @@ def _shift_round_kernel(X, S, OUT, FLAG, B, LIN: tl.constexpr, LOUT: tl.constexp
     carry = tl.where(sb >= 0, (wb >> rb) & 1, 0)
     prev = tl.zeros((BB,), dtype=tl.int64)
     for k in range(LOUT + 1):
-        i0 = q + k; i1 = q + k + 1
-        lo = tl.load(X + i0 * B64 + e, mask=ok & (i0 >= 0) & (i0 < LIN), other=0).to(tl.int64) & 4294967295
-        hi = tl.load(X + i1 * B64 + e, mask=ok & (i1 >= 0) & (i1 < LIN), other=0).to(tl.int64) & 4294967295
-        lo = tl.where(i0 >= LIN, sext, lo); hi = tl.where(i1 >= LIN, sext, hi)
-        v = (((lo | (hi << 32)) >> r) & 4294967295) + carry
+        v = _shifted_word(X, e, B64, q, r, sext, k, LIN, ok) + carry
         carry = v >> 32
         v = v & 4294967295
         if k < LOUT:
@@ -110,7 +116,8 @@ def _crt_pre_kernel(ACC, INV, MODS, MINV, YH, YL, KOUT, B, n, ldg, N, j0, w,
 
 
 @triton.jit
-def _crt_carry_kernel(ZHT, ZLT, Kk, Md, OUTW, BITLEN, B, W: tl.constexpr, BB: tl.constexpr):
+def _crt_carry_kernel(ZHT, ZLT, Kk, Md, OUTW, BITLEN, B, W: tl.constexpr, BB: tl.constexpr,
+                      COMBINED: tl.constexpr):
     """ZHT/ZLT: (4W, B) int32 digit-major. OUTW: (W, B) int32 limbs (two's complement)."""
     pid = tl.program_id(0)
     B64 = tl.cast(B, tl.int64)                               # offsets k*B can exceed 2^31
@@ -125,10 +132,12 @@ def _crt_carry_kernel(ZHT, ZLT, Kk, Md, OUTW, BITLEN, B, W: tl.constexpr, BB: tl
         v = carry
         for t in tl.static_range(4):
             j = 4 * wi + t
-            zh = tl.load(ZHT + j * B64 + e, mask=ok, other=0).to(tl.int64)
-            zl = tl.load(ZLT + j * B64 + e, mask=ok, other=0).to(tl.int64)
+            z = tl.load(ZHT + j * B64 + e, mask=ok, other=0).to(tl.int64)
+            if not COMBINED:
+                zl = tl.load(ZLT + j * B64 + e, mask=ok, other=0).to(tl.int64)
+                z = 128 * z + zl
             md = tl.load(Md + j).to(tl.int64)
-            v += (zl + 128 * zh - kk * md) << (8 * t)
+            v += (z - kk * md) << (8 * t)
         word = v & 4294967295
         carry = v >> 32
         tl.store(OUTW + wi * B64 + e, tl.where(word >= 2147483648, word - 4294967296, word).to(tl.int32), mask=ok)
@@ -138,7 +147,7 @@ def _crt_carry_kernel(ZHT, ZLT, Kk, Md, OUTW, BITLEN, B, W: tl.constexpr, BB: tl
         lastw = word
     neg = lastw >= 2147483648
     last = tl.where(neg, last1, last0); top = tl.where(neg, w1, w0)
-    tb = tl.where(top > 0, tl.floor(tl.log2(top.to(tl.float64))).to(tl.int64) + 1, 0)
+    tb = 32 - tl.extra.cuda.libdevice.clz(top.to(tl.int32))
     bl = tl.where(last >= 0, 32 * last.to(tl.int64) + tb, 0)
     tl.store(BITLEN + e, bl, mask=ok)
 
@@ -197,7 +206,7 @@ def _bitlen_kernel(X, OUT, B, L: tl.constexpr, BB: tl.constexpr):
         x = (tl.load(X + k * B64 + e, mask=ok, other=0).to(tl.int64) & 4294967295) ^ ext
         nz = x != 0
         last = tl.where(nz, k, last); wv = tl.where(nz, x, wv)
-    tb = tl.where(wv > 0, tl.floor(tl.log2(wv.to(tl.float64))).to(tl.int64) + 1, 0)
+    tb = 32 - tl.extra.cuda.libdevice.clz(wv.to(tl.int32))
     tl.store(OUT + e, tl.where(last >= 0, 32 * last + tb, 0), mask=ok)
 
 
@@ -220,9 +229,11 @@ def crt_pre(acc, inv, mods, minv, ldg, N, j0, w, rows):
 
 
 def crt_carry(ZhT, ZlT, k, Md):
+    """Carry CRT digit sums; ZlT=None means ZhT already contains 128*hi+lo."""
     E, B = ZhT.shape
     W = E // 4
     out = torch.empty((W, B), dtype=torch.int32, device=dev)
     bl = torch.empty((B,), dtype=torch.int64, device=dev)
-    _crt_carry_kernel[(triton.cdiv(B, 128),)](ZhT, ZlT, k, Md, out, bl, B, W=W, BB=128, num_warps=4)
+    _crt_carry_kernel[(triton.cdiv(B, 128),)](ZhT, ZlT if ZlT is not None else ZhT, k, Md, out, bl, B,
+                                            W=W, BB=128, COMBINED=ZlT is None, num_warps=4)
     return out, bl

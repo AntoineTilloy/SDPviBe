@@ -1,88 +1,86 @@
 {
- "title": "SDPviBe on RTX 3090s and an H100 vs SDPB 3.1 on 64 CPU cores (time per iteration)",
- "sdpb": "SDPB 3.1 on 64 cores",
- "gpu": "RTX 3090",
- "note": "SDPB: AMD EPYC, 64 threads (vast.ai); GPUs: 8x RTX 3090 box (EPYC 7543), PCIe; mean over iterations 2+. Synthetic SDPs: tools/synth_sdp.py (stress-tensor-system block structure), 832 bits. Real: mixed Ising nmax=10 (pmp2sdp), 768 bits, 131 iterations. H100: 1x H100 80GB HBM3 SXM (vast.ai, $2.2/h).",
- "problems": [
-  {
-   "name": "mixed Ising\nnmax=10 (real)",
-   "N": 274,
-   "sdpb_s": 10.2,
-   "gpu_s": {
-    "1": 1.197,
-    "2": 0.916,
-    "4": 0.934,
-    "h100": 0.599
-   }
+  "title": "SDPviBe on RTX 3090 and H100 SXM: refreshed GPU measurements",
+  "date": "2026-10-24",
+  "sdpb": "SDPB 3.1 CPU reference",
+  "gpu": "RTX 3090",
+  "note": "GPU times: mean of iterations 2 onward; six iterations for synthetic inputs, full solve for mixed Ising. All GPU columns use hash-identical input files. Synthetic SDPB 64-thread times are historical references for the same problem shapes; original input hashes are unavailable, so those CPU/GPU ratios are indicative. The real input uses a new 16-rank SDPB reference on identical files. See BENCHMARK_20261024.md.",
+  "problems": [
+    {
+      "name": "mixed Ising\nnmax=10 (real)",
+      "N": 274,
+      "sdpb_s": 10.147261682242991,
+      "cpu_label": "16 ranks \u00b7 new",
+      "gpu_s": {
+        "1": 0.8202429906542056,
+        "2": 0.5848317757009346,
+        "4": 0.6046728971962617,
+        "h100": 0.5463364485981309
+      }
+    },
+    {
+      "name": "stress-tensor\nnmax~6",
+      "N": 742,
+      "sdpb_s": 108.1,
+      "cpu_label": "64 threads \u00b7 historical",
+      "gpu_s": {
+        "1": 5.1268,
+        "2": 3.404,
+        "4": 2.8125999999999998,
+        "h100": 2.5594
+      }
+    },
+    {
+      "name": "stress-tensor\nnmax~8",
+      "N": 1319,
+      "sdpb_s": 343.9,
+      "cpu_label": "64 threads \u00b7 historical",
+      "gpu_s": {
+        "1": 12.7972,
+        "2": 6.5662,
+        "4": 4.131,
+        "h100": 4.9462
+      }
+    },
+    {
+      "name": "stress-tensor\nnmax~10",
+      "N": 2061,
+      "sdpb_s": 963.7,
+      "cpu_label": "64 threads \u00b7 historical",
+      "gpu_s": {
+        "1": 24.4042,
+        "2": 13.524,
+        "4": 8.1738,
+        "h100": 11.3028
+      }
+    }
+  ],
+  "no_sdpb": {
+    "stress-tensor nmax~12 (N=2968)": {
+      "1": 49.798,
+      "2": 27.1024,
+      "4": 15.0922,
+      "h100": 18.6246
+    },
+    "stress-tensor nmax~14 (N=4040)": {
+      "h100": 29.7482
+    }
   },
-  {
-   "name": "stress-tensor\nnmax~6",
-   "N": 742,
-   "sdpb_s": 108.1,
-   "gpu_s": {
-    "1": 6.707,
-    "2": 4.176,
-    "4": 3.492,
-    "h100": 3.15
-   }
-  },
-  {
-   "name": "stress-tensor\nnmax~8",
-   "N": 1319,
-   "sdpb_s": 343.9,
-   "gpu_s": {
-    "1": 17.702,
-    "2": 8.734,
-    "4": 5.931,
-    "h100": 6.806
-   }
-  },
-  {
-   "name": "stress-tensor\nnmax~10",
-   "N": 2061,
-   "sdpb_s": 963.7,
-   "gpu_s": {
-    "1": 33.678,
-    "2": 18.034,
-    "4": 11.009,
-    "h100": 13.845
-   }
-  }
- ],
- "gpu_8_s": {
-  "stress-tensor nmax~6": 5.082,
-  "stress-tensor nmax~8": 7.627,
-  "stress-tensor nmax~10": 14.973,
-  "stress-tensor nmax~12": 56.251
- },
- "no_sdpb": {
-  "stress-tensor nmax~12 (N=2968)": {
-   "1": 77.528,
-   "2": 42.51,
-   "4": 24.301,
-   "8": 56.251,
-   "h100": 26.497
-  },
-  "stress-tensor nmax~14 (N=4040)": {
-   "h100": 42.794
-  }
- },
- "series": [
-  {
-   "key": "1",
-   "label": "1 x RTX 3090"
-  },
-  {
-   "key": "2",
-   "label": "2 x RTX 3090"
-  },
-  {
-   "key": "4",
-   "label": "4 x RTX 3090"
-  },
-  {
-   "key": "h100",
-   "label": "1 x H100 80GB SXM"
-  }
- ]
+  "series": [
+    {
+      "key": "1",
+      "label": "1 \u00d7 RTX 3090"
+    },
+    {
+      "key": "2",
+      "label": "2 \u00d7 RTX 3090"
+    },
+    {
+      "key": "4",
+      "label": "4 \u00d7 RTX 3090"
+    },
+    {
+      "key": "h100",
+      "label": "1 \u00d7 H100 80 GB SXM"
+    }
+  ]
 }
