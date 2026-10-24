@@ -16,7 +16,7 @@ import torch
 from .limbops import shift_round, bitlen_words
 from .mpmat import MP, ctx, gemm_nt, add as mp_add
 from .linalg import chol as _chol, trsm_left, fx_exp, _split, _ntiles
-from .rns import dev
+from .rns import dev, gemm_config
 
 EZ = -(1 << 40)                                      # exponent of zero
 
@@ -66,13 +66,21 @@ extern "C" __global__ void mpf_mul(const int* A, const i64* eA, const int* B, co
     if (nbg) negate(b, L);
     int la = bitlen(a, L), lb = bitlen(b, L);
     if (la == 0 || lb == 0) { for (int k = 0; k < L; k++) O[k * n + i] = 0; eO[i] = EZ; return; }
-    for (int k = 0; k < 2 * L; k++) p[k] = 0;
-    for (int x = 0; x < L; x++) {
-        u32 ax = a[x]; if (!ax) continue;
-        u64 c = 0;
-        for (int y = 0; y < L; y++) { u64 t = (u64)ax * b[y] + p[x + y] + c; p[x + y] = (u32)t; c = t >> 32; }
-        p[x + L] = (u32)c;
+    // Scan product diagonals: accumulate low/high halves independently, then carry once
+    // per output limb. This keeps the inner products independent and writes p only once.
+    u64 carry = 0, hprev = 0;
+    for (int k = 0; k < 2 * L - 1; k++) {
+        u64 lo = 0, hi = 0;
+        int first = max(0, k - L + 1), last = min(k, L - 1);
+        #pragma unroll 4
+        for (int x = first; x <= last; x++) {
+            u64 product = (u64)a[x] * b[k - x];
+            lo += (u32)product; hi += product >> 32;
+        }
+        u64 sum = lo + hprev + carry;
+        p[k] = (u32)sum; carry = sum >> 32; hprev = hi;
     }
+    p[2 * L - 1] = (u32)(hprev + carry);
     int s = bitlen(p, 2 * L) - NB;
     shift_mag(p, 2 * L, s, r, L);
     if (na != nbg) negate(r, L);
@@ -411,7 +419,6 @@ def gemm(A, B, transA=False, transB=False):
     ACC = 400 << 20
     w = N if R.n * nb * M * N * 2 <= ACC else max(32, ACC // (R.n * nb * M * 2) // 32 * 32)
     kc = 4096
-    BMk = 128 if min(M, N) >= 128 else (64 if min(M, N) >= 64 else 32)
     for j0 in range(0, N, w):
         jw = min(w, N - j0)
         Bj = Bm[:, :, j0:j0 + jw].contiguous().view(L, nb * jw, K)
@@ -425,9 +432,10 @@ def gemm(A, B, transA=False, transB=False):
                 Ah, Al = R.residues(Av, k0, kk, g0, G)
                 Bh, Bl = R.residues(Bj, k0, kk, g0, G)
                 kp = Ah.shape[-1]                                    # kk padded to a multiple of 16
-                _bgemm_kernel[(triton.cdiv(M, BMk), triton.cdiv(jw, BMk), G * nb)](
+                BMk, BNk, BK, warps = gemm_config(M, jw, kp)
+                _bgemm_kernel[(triton.cdiv(M, BMk), triton.cdiv(jw, BNk), G * nb)](
                     Ah, Al, Bh, Bl, acc, R.m32, R.mi32, R.c14, g0, nb, M, jw, kp,
-                    BM=BMk, BN=BMk, BK=32 if kp < 64 else 64, num_warps=8 if BMk == 128 else 4, num_stages=3)
+                    BM=BMk, BN=BNk, BK=BK, num_warps=warps, num_stages=3)
                 del Ah, Al, Bh, Bl
         rows = nb * M
         cb = max(1, min(jw, 65536 // max(rows, 1)))

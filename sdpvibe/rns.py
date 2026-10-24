@@ -35,6 +35,25 @@ def _sdigits(x, base, L):
     return out
 
 
+def gemm_config(M, N, K):
+    """Tiles for the short/wide products in recursive triangular solves.
+
+    Large square tiles spill registers on Ampere for medium inner dimensions;
+    rectangular tiles avoid repeating a narrow operand across tiny squares.
+    """
+    bk = 32 if K < 64 else 64
+    if min(M, N) < 16:
+        return 32, 32, bk, 4
+    if M < 64 <= N:
+        return 32, 64, bk, 4
+    if N < 64 <= M:
+        return 128, 32, bk, 4
+    if min(M, N) >= 128 and K >= 1024:
+        return 128, 128, bk, 8
+    b = 64 if min(M, N) >= 64 else 32
+    return b, b, bk, 4
+
+
 # ------------------------------------------------------------------------------- kernels
 @triton.jit
 def _fmod(x, m, mi):
@@ -118,6 +137,28 @@ def _gemm_kernel(Ahi, Alo, Bhi, Blo, ACC, mods, minv, c14s, g0, M, N, KC,
     tl.store(ACC + o, _fmod(v, m, mi).to(tl.int16), mask=msk)
 
 
+@triton.jit
+def _crt_dot_kernel(Ct, Yhi, Ylo, Z, E, B, N,
+                    BE: tl.constexpr, BB: tl.constexpr, BK: tl.constexpr):
+    """CRT digit sums, Ct @ (128 Yhi + Ylo)^T, in one INT8 kernel.
+
+    The caller bounds N so each signed digit sum fits in int32. Combining the
+    two products here halves the temporary storage read by the carry kernel.
+    """
+    e = tl.program_id(0) * BE + tl.arange(0, BE)
+    b = tl.program_id(1) * BB + tl.arange(0, BB)
+    hi = tl.zeros((BE, BB), tl.int32)
+    lo = tl.zeros((BE, BB), tl.int32)
+    for k0 in range(0, N, BK):
+        k = k0 + tl.arange(0, BK)
+        c = tl.load(Ct + e[:, None] * N + k[None, :], (e[:, None] < E) & (k[None, :] < N), 0)
+        h = tl.load(Yhi + b[None, :].to(tl.int64) * N + k[:, None], (b[None, :] < B) & (k[:, None] < N), 0)
+        l = tl.load(Ylo + b[None, :].to(tl.int64) * N + k[:, None], (b[None, :] < B) & (k[:, None] < N), 0)
+        hi = tl.dot(c, h, hi)
+        lo = tl.dot(c, l, lo)
+    tl.store(Z + e[:, None].to(tl.int64) * B + b[None, :], 128 * hi + lo, (e[:, None] < E) & (b[None, :] < B))
+
+
 # ------------------------------------------------------------------------------- context
 class RNS:
     """Moduli and tables for products of L-limb integers with inner dimension <= kmax."""
@@ -163,7 +204,9 @@ class RNS:
         kp = -(-kc // self.KPAD) * self.KPAD
         Xb = X.view(torch.int8)
         Rhi = torch.empty((G, rows, kp), dtype=torch.int8, device=dev); Rlo = torch.empty_like(Rhi)
-        BR = 128; GG = self.G
+        # More moduli per tile reuse the limb bytes; 64 entries keep register
+        # pressure low. Keep the original tile for a final group of 16 moduli.
+        BR, GG = (64, 32) if G % 32 == 0 else (128, self.G)
         _residue_kernel[(triton.cdiv(rows * kp, BR), G // GG)](
             Xb, self.Tlo[g0:], self.Thi[g0:], self.C1[g0:], self.C2[g0:],
             self.m32[g0:], self.mi32[g0:], Rhi, Rlo,
@@ -185,7 +228,15 @@ class RNS:
         """acc: (n, rows_total, N) int16; block = all rows (< rows), columns j0..j0+w"""
         from .limbops import crt_pre, crt_carry
         Yh, Yl, k = crt_pre(acc, self.inv32, self.m32, self.mi32, acc.stride(0), N, j0, w, rows)
-        Bq = Yh.shape[0]; Bp = max(32, (Bq + 31) // 32 * 32)          # cuBLASLt int8: multiples of 32
+        Bq = Yh.shape[0]
+        if self.n <= 1024:                                  # |y| < 2^14, |Ct| <= 128 => |sum| < 2^31
+            Z = torch.empty((self.E, Bq), dtype=torch.int32, device=dev)
+            _crt_dot_kernel[(triton.cdiv(self.E, 32), triton.cdiv(Bq, 64))](
+                self.Ct, Yh, Yl, Z, self.E, Bq, self.n, BE=32, BB=64, BK=32,
+                num_warps=4, num_stages=3)
+            W, bl = crt_carry(Z, None, k, self.Md)
+            return W, bl, Bq
+        Bp = max(32, (Bq + 31) // 32 * 32)                         # cuBLASLt int8: multiples of 32
         if Bp != Bq:
             Yh = torch.cat([Yh, Yh.new_zeros(Bp - Bq, Yh.shape[1])]); Yl = torch.cat([Yl, Yl.new_zeros(Bp - Bq, Yl.shape[1])])
             k = torch.cat([k, k.new_zeros(Bp - Bq)])

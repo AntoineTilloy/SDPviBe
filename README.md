@@ -82,6 +82,9 @@ machine compiles kernels, ~40 s).
 
 ## Performance
 
+For the October 2026 single-3090 optimization study (profiling, same-GPU before/after
+timings, numerical checks and reproduction commands), see [the detailed report](docs/PERFORMANCE_3090.md).
+
 Per iteration, against official SDPB on 56-64 cores (AMD EPYC):
 
 | problem | SDPB (CPU) | SDPviBe (one RTX 5090) |

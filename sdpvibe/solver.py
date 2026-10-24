@@ -641,6 +641,7 @@ class Solver:
             S = F.zeros((g.nb, g.P, g.P), self.L)
             for c0, r0, ro in self.segments(g):
                 for c1, r1, co in self.segments(g):
+                    if co > ro: break                     # the upper triangle is overwritten below
                     el = None
                     for b in range(len(g.h)):
                         for t in (mul(sb(AXI[b], c0, r1), sy(AY[b], c1, r0)), mul(sb(AXI[b], r0, r1), sy(AY[b], c1, c0)),

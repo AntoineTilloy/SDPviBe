@@ -1,0 +1,34 @@
+{
+  "features": {
+    "resume_bitwise": true,
+    "resume_same_out": true,
+    "text_ck_sdpb_to_sdpvibe": {
+      "rc": 0,
+      "reason": "found primal feasible solution",
+      "ref_reason": "found primal feasible solution",
+      "iterations": 82,
+      "ref_iterations": 82,
+      "dualObjective_digits": 99.0,
+      "y_digits": 15.164993331866494
+    },
+    "text_ck_sdpvibe_to_sdpb": {
+      "rc": 0,
+      "reason": "found primal feasible solution",
+      "iterations": 82,
+      "dualObjective_digits": 99.0,
+      "y_digits": 14.329612354216234
+    },
+    "zip_bitwise": true,
+    "maxRuntime_reason": "maxRuntime exceeded",
+    "sigterm": {
+      "rc": 15,
+      "reason": "SIGTERM signal received",
+      "checkpoint": true,
+      "resumed_reason": "found primal feasible solution"
+    },
+    "paramFile": {
+      "reason": "maxIterations exceeded",
+      "iterations": 7
+    }
+  }
+}

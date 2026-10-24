@@ -11,5 +11,8 @@ requires-python = ">=3.10"
 # cupy must match the CUDA version: pip install cupy-cuda12x  or  cupy-cuda13x
 dependencies = ["torch", "triton", "numpy", "mpmath"]
 
+[project.optional-dependencies]
+test = ["pytest"]
+
 [tool.setuptools]
 packages = ["sdpvibe"]

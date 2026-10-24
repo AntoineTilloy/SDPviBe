@@ -8,9 +8,9 @@ Blocks of different sizes are handled by grouping blocks of equal size (or paddi
 import torch
 import triton
 import triton.language as tl
-from .rns import dev, _fmod
+from .rns import dev, _fmod, gemm_config
 from .mpmat import ctx, headroom_bits
-from .limbops import shift_round, add_same, bitlen_words, crt_pre, crt_carry
+from .limbops import shift_round, add_same, bitlen_words, _shifted_word
 
 
 class BMP:
@@ -52,14 +52,44 @@ def brescale(A, new_exp, Lout=None):
     return BMP(shift_round(A.flat(), s, Lo).view(Lo, nb, R, C), ne.clone())
 
 
+@triton.jit
+def _badd_align_kernel(A, B, EA, EB, OUT, EO, entries, rows, cols, sign: tl.constexpr, L: tl.constexpr, BB: tl.constexpr):
+    # Both operands shift right by at least one bit, so their rounding cannot overflow.
+    e = tl.program_id(0) * BB + tl.arange(0, BB)
+    ok = e < entries
+    stride = entries.to(tl.int64)
+    col = (e // (rows * cols)) * cols + e % cols
+    ea = tl.load(EA + col, mask=ok, other=0); eb = tl.load(EB + col, mask=ok, other=0)
+    ex = tl.maximum(ea, eb) + 1
+    sa = ex - ea; sb = ex - eb
+    qa = sa >> 5; ra = sa & 31
+    qb = sb >> 5; rb = sb & 31
+    ax = tl.where(tl.load(A + (L - 1) * stride + e, mask=ok, other=0) < 0, 0xffffffff, 0).to(tl.int64)
+    bx = tl.where(tl.load(B + (L - 1) * stride + e, mask=ok, other=0) < 0, 0xffffffff, 0).to(tl.int64)
+    ca = _shifted_word(A, e, stride, (sa - 1) >> 5, (sa - 1) & 31, ax, 0, L, ok) & 1
+    cb = _shifted_word(B, e, stride, (sb - 1) >> 5, (sb - 1) & 31, bx, 0, L, ok) & 1
+    carry = tl.zeros((BB,), tl.int64)
+    for k in range(L):
+        a = _shifted_word(A, e, stride, qa, ra, ax, k, L, ok) + ca
+        b = _shifted_word(B, e, stride, qb, rb, bx, k, L, ok) + cb
+        ca = a >> 32; cb = b >> 32
+        total = (a & 0xffffffff) + sign * (b & 0xffffffff) + carry
+        carry = total >> 32
+        tl.store(OUT + k * stride + e, total.to(tl.int32), mask=ok)
+    tl.store(EO + col, ex, mask=ok & ((e // cols) % rows == 0))
+
+
 def badd(A, B, alpha=1, out_exp=None):
     nb, R, C = A.shape; L = A.L
     if isinstance(out_exp, int) and A.exp == out_exp and B.exp == out_exp:
         return BMP(add_same(A.flat(), B.flat(), alpha).view(L, nb, R, C), out_exp)
     assert out_exp == "align"
-    e = torch.maximum(A.expt(), B.expt()) + 1
-    a = brescale(A, e); b = brescale(B, e)
-    return BMP(add_same(a.flat(), b.flat(), alpha).view(L, nb, R, C), e)
+    out = torch.empty((L, nb, R, C), dtype=torch.int32, device=dev)
+    e = torch.empty((nb, C), dtype=torch.int64, device=dev)
+    _badd_align_kernel[(triton.cdiv(nb * R * C, 128),)](
+        A.flat().contiguous(), B.flat().contiguous(), A.expt().contiguous(), B.expt().contiguous(),
+        out, e, nb * R * C, R, C, alpha, L, 128, num_warps=4)
+    return BMP(out, e)
 
 
 # ------------------------------------------------------------------ batched RNS GEMM kernel
@@ -143,8 +173,6 @@ def bgemm_nt(A, Bt, out_exp="col", kc=4096, bt_rowexp=None):
     GR = R.n if R.n * nb * (M + N) * min(kc, K) * 2 <= (256 << 20) else max(R.G, R.G * 2)
     same = A.limbs.data_ptr() == Bt.limbs.data_ptr()
     Av = A.limbs.view(L, nb * M, K); Bv = Bt.limbs.view(L, nb * N, K)
-    BM = BN = 128 if min(M, N) >= 128 else (64 if min(M, N) >= 64 else 32)
-    warps = 8 if BM == 128 else 4
     for k0 in range(0, K, kc):
         kk = min(kc, K - k0)
         for g0 in range(0, R.n, GR):
@@ -152,9 +180,10 @@ def bgemm_nt(A, Bt, out_exp="col", kc=4096, bt_rowexp=None):
             Ah, Al = R.residues(Av, k0, kk, g0, G)
             Bh, Bl = (Ah, Al) if same else R.residues(Bv, k0, kk, g0, G)
             kp = Ah.shape[-1]                                        # kk padded to a multiple of 16
+            BM, BN, BK, warps = gemm_config(M, N, kp)
             _bgemm_kernel[(triton.cdiv(M, BM), triton.cdiv(N, BN), G * nb)](
                 Ah, Al, Bh, Bl, acc, R.m32, R.mi32, R.c14, g0, nb, M, N, kp,
-                BM=BM, BN=BN, BK=32 if kp < 64 else 64, num_warps=warps, num_stages=3)
+                BM=BM, BN=BN, BK=BK, num_warps=warps, num_stages=3)
             del Ah, Al, Bh, Bl
     # exponent of the exact product, per (block, column)
     eB = Bt.exp if bt_rowexp is None else bt_rowexp
