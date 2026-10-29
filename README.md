@@ -85,6 +85,28 @@ checkpoint, resume), `--paramFile`. On tiny problems SDPB is faster per iteratio
 ~550 kernel launches per iteration, ~0.1 s); startup with warm kernel caches is ~4 s (the first run on a
 machine compiles kernels, ~40 s).
 
+## Example: the 3d Ising island at Λ=43
+
+On one workstation with three RTX 3090s power-capped at 250 W, SDPviBe solved every SDP of a blind
+recomputation of the σ–ε 3d Ising island at Λ=43, the precision of
+[Kos, Poland, Simmons-Duffin, Vichi 2016](https://arxiv.org/abs/1603.04436).
+The search used the navigator function ([arXiv:2104.09518](https://arxiv.org/abs/2104.09518)) with the
+OPE angle θ as a variable, narrowed the island through Λ = 11, 19, 27, 35, 43, and never read published
+values. Blocks came from `scalar_blocks` and SDPs from `pmp2sdp`, unchanged (S43, order 90, κ=40, 960 bits).
+
+| | Δσ | Δε |
+|---|---|---|
+| this run, October 2026 | 0.5181490(13) | 1.412625(13) |
+| KPSV 2016 | 0.5181489(10) | 1.412625(10) |
+
+Each of the four ends is bracketed by an allowed point and a point excluded for every θ, at most 3e-10
+(Δσ) or 1e-9 (Δε) apart. Adding spins, derivative order, poles or precision moves the ends by less than
+1e-8. The island contains KPSV's ranges and is 1.3× wider, consistent with
+[arXiv:2411.15300](https://arxiv.org/abs/2411.15300), which found this region slightly larger when it
+recomputed it. Cost: 893 solves, 183 GPU-hours, 87.6 h end to end. Much of the saving over 2016 is
+algorithmic (navigator, BFGS, hot starts), and no CPU SDPB run of the same workflow was made, so this
+is not a speedup measurement.
+
 ## Performance
 
 For the October 2026 single-3090 optimization study (profiling, same-GPU before/after
