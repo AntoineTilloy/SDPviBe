@@ -165,6 +165,39 @@ everything cost +1.6% (nmax~8).  What remains on 32 GB at nmax>=14 is the cost o
 and of X/Y.  Limits: chol(Q) needs ~9x Q (58 GB at nmax~18) -> 96 GB card above nmax~16; host RAM
 ~1.2x the host arrays above; PCIe 4 hosts (most 5090s) have half the bandwidth.
 
+## Checked step length (2026-10-30)
+
+The step lengths need lambda_min(L^-1 dX L^-T) per block (and the same for Y). The eigenvalue came from a
+float64 copy, whose error is ~n eps ||M||: harmless when |lambda_min| is comparable to ||M|| (every
+validation run: iterates within 1e-13..1e-15 of SDPB), wrong when large positive eigenvalues sit next to
+the smallest one, which happens in hot starts from a nearby SDP's checkpoint. SDPB computes these
+eigenvalues at full precision (Elemental's HermitianEig).
+
+Now (`solver.min_eig`, `refine_min_eig`): each block's float64 lambda_min comes with the bound
+(n + 2) eps ||M||_F. A block where the bound could move the step length by more than EIG_TOL = 1e-10
+(relative; `SDPB_GPU_EIG_TOL`) is recomputed in multiprecision: with V the float64 eigenvectors,
+W = V^T M V (multiprecision) is congruent to M (eigenvalues times 1 + O(n eps)); its eigenvalues above
+2^-20 ||M||_F are deflated through the Schur complement W_ss - W_sb W_bb^-1 W_bs, and this repeats until
+lambda_min is resolved. Blocks of one size are refined together (full-size complements with zeroed rows),
+so a level costs a few batched GEMMs and one batched Cholesky.
+
+Checks (Atlas, RTX 3090, 640-960 bits):
+* `tests/test_step_length.py`: exact spectra (X = V V^T, dM = V diag(lam) V^T, V integer), n = 40 and
+  144, spreads up to 2^700, clusters, several blocks per call: the float64 step is wrong by 100% in every
+  hard case, the checked one within 2e-15 of exact; 0.015-0.19 s per batched refinement.
+* Cold solves are unchanged: the full 3d Ising Lambda=11 navigator solve (194 iterations) and the first
+  40 iterations of a Lambda=43 one give bitwise identical iterations.json, x and y, with no block refined
+  and the same time per iteration (7.45 vs 7.56 s at Lambda=43).
+* The six Lambda=11 hot starts of the Ising run that crashed ("matrix is not positive definite", Schur
+  complement), replayed from the same checkpoints: the float64 version crashes again in 6 of 6, after
+  erratic step lengths (0.06, 9e-8, 0.014, ...); the checked version never crashes (6 of 6 reach the
+  400-iteration cap), refining 2.7k-16k blocks over 160-270 iterations, all resolved. Its first dual step
+  is 1.36e-52 instead of 4.16e-53 (float64 was off by 3x). These hot starts still fail: mu is driven to
+  ~1e-50 while the dual error stays ~1e-5 (warm-start stalling, as with SDPB, arXiv:2307.13046), then the
+  steps collapse. Cost: 32 s instead of 31 s for the first 160 iterations of one replay.
+* The Lambda=43 hot start that ended with "dual step too small" at iteration 110 does the same with checked
+  steps (90 blocks refined in 21 iterations, every printed step length unchanged): a genuine stall.
+
 ## Where the time goes / next steps
 
 * Large GEMMs run at ~15 G multiprecision-MAC/s (~70 TOPS int8). Small-inner-dimension GEMMs are
@@ -172,8 +205,8 @@ and of X/Y.  Limits: chol(Q) needs ~9x Q (58 GB at nmax~18) -> 96 GB card above 
   inverses + one refinement step (refinement squares the error) to get fewer, bigger GEMMs.
 * Cholesky tiles (32×32) are latency-bound on CUDA cores (~7 ms/tile, sequential along the
   diagonal); batching over blocks hides this for the S_j, not for the single Q.
-* Not yet done: step length (min eigenvalue; plan: Cholesky-based test or multiprecision Lanczos),
-  Schur-complement assembly (elementwise), integration into SDPB (BigFloat ↔ limbs).
+* Not yet done: Schur-complement assembly (elementwise), integration into SDPB (BigFloat ↔ limbs).
+  (Step length: float64 eigenvalues, checked and refined in multiprecision since 2026-10-30, above.)
 * Memory: the laptop GPU limits sizes to n≈2048; an RTX 3090 (24 GB, ~3× INT8 throughput and
   bandwidth) should handle N≈5000 and run ~3× faster; independent moduli split across GPUs.
 

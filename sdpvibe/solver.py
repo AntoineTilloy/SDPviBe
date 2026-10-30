@@ -917,8 +917,9 @@ class Solver:
                                    for b in range(len(g.h))]
                         ST.put(("dp", gi), dict(dX=dXg, dY=dYg))
                     else:
-                        r["lamP"] = min_eig(o["ch"]["X"], dXg)
-                        r["lamD"] = min_eig(o["ch"]["Y"], dYg)
+                        gm = p["stepLengthReduction"]
+                        r["lamP"] = min_eig(o["ch"]["X"], dXg, gamma=gm, stats=r)
+                        r["lamD"] = min_eig(o["ch"]["Y"], dYg, gamma=gm, stats=r)
                         ST.drop(("dp", gi))
                         ST.put(("dc", gi), dict(dx=dxg, dX=dXg, dY=dYg))
                     return r
@@ -928,6 +929,7 @@ class Solver:
                     else:
                         for k in ("lamP", "lamD"):
                             if r[k] is not None: acc[k] = r[k] if acc[k] is None else min(acc[k], r[k])
+                        for k in ("eig_refined", "eig_unresolved"): acc[k] = acc.get(k, 0) + r.get(k, 0)
                 return dy, acc
 
             beta_p = mp.mpf(0) if pd_feas else p["infeasibleCenteringParameter"]
@@ -937,6 +939,10 @@ class Solver:
             beta = r * r if r < 1 else r
             beta_c = min(max(p["feasibleCenteringParameter"], beta), mp.mpf(1)) if pd_feas else max(p["infeasibleCenteringParameter"], beta)
             dy, acc = direction(beta_c, True)
+            if acc.get("eig_refined"):
+                self.eig_refined = getattr(self, "eig_refined", 0) + acc["eig_refined"]
+                self.eig_refined_its = getattr(self, "eig_refined_its", 0) + 1
+                self.eig_unresolved = getattr(self, "eig_unresolved", 0) + acc.get("eig_unresolved", 0)
             for gi in range(nG): ST.drop(("cholS", gi)); ST.drop(("Pm", gi))
             del cholQ
             gm = p["stepLengthReduction"]
@@ -968,6 +974,11 @@ class Solver:
         if getattr(self, "q_lossy", 0):
             print(f"sdpvibe: warning: in {self.q_lossy} iterations a Q column lost more than 28 bits (scale drop between iterations)",
                   file=sys.stderr)
+        if getattr(self, "eig_refined", 0) and D.rank() == 0:
+            print(f"sdpvibe: note: in {self.eig_refined_its} iterations the step length of {self.eig_refined} blocks needed "
+                  f"multiprecision eigenvalues (float64 not accurate to {EIG_TOL:g})"
+                  + (f"; {self.eig_unresolved} stayed unresolved (shorter step used)" if self.eig_unresolved else ""),
+                  file=sys.stderr)
         return self.result
 
 
@@ -982,8 +993,78 @@ def solve_panels(cs, B, panels):
     return P
 
 
-def min_eig(chols, dMs, lam=None):
-    """min over blocks of lambda_min(L^-1 dM L^-T) (eigenvalues from a float64 copy), combined with lam"""
+EIG_TOL = float(os.environ.get("SDPB_GPU_EIG_TOL", "1e-10"))       # relative accuracy of the step lengths
+_EPS = 2.0 ** -52
+_DEFLATE = 2.0 ** -20                                                # refine_min_eig: deflated eigenvalues > this ||A||_F
+
+
+def _eig_err(Mf):
+    """bound on |computed - exact| of the float64 eigenvalues of Mf (nb, n, n), per block: rounding to
+    float64 plus LAPACK's backward error, (n + 2) eps ||Mf||_F"""
+    return (Mf.shape[-1] + 2) * _EPS * np.sqrt((Mf * Mf).sum(axis=(1, 2)))
+
+
+def _resolved(lam, err, gamma):
+    """every eigenvalue in [lam - err, lam + err] gives the same step length to EIG_TOL"""
+    return step_from_eig(lam - err, gamma) >= (1 - EIG_TOL) * step_from_eig(lam + err, gamma)
+
+
+def _mpf_from_float(V, L):
+    """float64 array -> MPF, exactly (53-bit mantissas as two 32-bit limbs)"""
+    m, e = np.frexp(V)
+    mi = (m * 2.0 ** 53).astype(np.int64).reshape(-1)
+    w = np.stack([(mi & 0xFFFFFFFF).astype(np.uint32).view(np.int32), (mi >> 32).astype(np.int32)])
+    ein = np.where(mi != 0, e.reshape(-1).astype(np.int64) - 53, EZ)
+    return F.normalize(torch.from_numpy(w).to(dev), torch.from_numpy(ein).to(dev), L).reshape(*V.shape)
+
+
+def refine_min_eig(A, gamma, levels=64):
+    """lambda_min of each symmetric MPF matrix A[b] (nb, n, n) to the accuracy the step length needs
+    (EIG_TOL), for blocks whose float64 copy cannot resolve it (large positive eigenvalues next to the
+    smallest one).  Each level deflates the eigenvalues above _DEFLATE ||A||_F: with V the float64
+    eigenvectors, W = V^T A V (multiprecision) is congruent to A, so its eigenvalues are A's times
+    1 + O(n eps) (Ostrowski), and W is diagonal up to O(n eps ||A||); W's eigenvalues below the deflated
+    ones are those of the Schur complement W_ss - W_sb W_bb^-1 W_bs up to a relative O((n eps / _DEFLATE)^2).
+    The complement is formed at full size (deflated rows and columns zero) so that the blocks stay batched;
+    its extra zero eigenvalues do not change the step length (0 > -gamma).  Returns (values, number of
+    blocks left unresolved, whose value is the lower end of their float64 error interval: the shorter step)."""
+    L = A.L
+    out, idx, unresolved = [None] * A.shape[0], list(range(A.shape[0])), set()
+    one = F.scalar(1, L)
+    for _ in range(levels):
+        s = F._top(A).reshape(len(idx), -1).amax(1)
+        zero = (s <= EZ // 2).tolist()
+        s = torch.where(s <= EZ // 2, torch.zeros_like(s), s)
+        Af = A.shift(-s[:, None, None]).to_float(); Af = (Af + np.swapaxes(Af, 1, 2)) / 2
+        w, V = np.linalg.eigh(Af)
+        err = _eig_err(Af)
+        big = w > _DEFLATE * np.sqrt((Af * Af).sum(axis=(1, 2)))[:, None]
+        keep = []
+        for j, q in enumerate(idx):
+            sc = mp.mpf(2) ** int(s[j])
+            lam, e = mp.mpf(float(w[j, 0])) * sc, mp.mpf(float(err[j])) * sc
+            unresolved.discard(q)
+            if zero[j]: out[q] = mp.mpf(0)
+            elif _resolved(lam, e, gamma): out[q] = lam
+            else:
+                out[q] = lam - e                                     # until resolved: the shorter, safe step
+                unresolved.add(q)
+                if big[j].any() and not big[j].all(): keep.append(j)
+        if not keep: break
+        A, idx = A[torch.tensor(keep, device=dev)], [idx[j] for j in keep]
+        Pb = torch.from_numpy(big[keep]).to(dev); Ps = ~Pb                # deflated / kept rows
+        Vm = _mpf_from_float(V[keep], L)
+        W = symmetrize(gemm(Vm, gemm(A, Vm), transA=True))
+        Wbb = add_diag(masked(W, Pb[:, :, None] & Pb[:, None, :]), one, Ps)  # identity on the kept rows
+        Y = Chol(Wbb).solve_lower(masked(W, Pb[:, :, None] & Ps[:, None, :]))
+        A = symmetrize(add(masked(W, Ps[:, :, None] & Ps[:, None, :]), gemm(Y, Y, transA=True), -1))
+    return out, len(unresolved)
+
+
+def min_eig(chols, dMs, lam=None, gamma=None, stats=None):
+    """min over blocks of lambda_min(L^-1 dM L^-T), combined with lam.  Eigenvalues from a float64 copy;
+    with gamma (stepLengthReduction), the blocks whose float64 error bound could move the step length by
+    more than EIG_TOL are recomputed in multiprecision (refine_min_eig), counted in stats["eig_refined"]"""
     for ch, D in zip(chols, dMs):
         T = ch.solve_lower(D)
         M = ch.solve_lower(T.T)                                      # L^-1 dM L^-T (dM symmetric)
@@ -994,9 +1075,21 @@ def min_eig(chols, dMs, lam=None):
         Mf = M.shift(-s[:, None, None]).to_float()
         Mf = (Mf + np.swapaxes(Mf, 1, 2)) / 2
         ev = np.linalg.eigvalsh(Mf)[:, 0]
+        err = _eig_err(Mf)
+        flag = []
         for q in torch.nonzero(ok).reshape(-1).tolist():
-            l = mp.mpf(float(ev[q])) * mp.mpf(2) ** int(s[q])
+            sc = mp.mpf(2) ** int(s[q])
+            l = mp.mpf(float(ev[q])) * sc
+            if gamma is not None and not _resolved(l, mp.mpf(float(err[q])) * sc, gamma):
+                flag.append(q); continue
             lam = l if lam is None else min(lam, l)
+        if flag:
+            vals, nu = refine_min_eig(M[torch.tensor(flag, device=dev)], gamma)
+            for l in vals:
+                lam = l if lam is None else min(lam, l)
+            if stats is not None:
+                stats["eig_refined"] = stats.get("eig_refined", 0) + len(flag)
+                stats["eig_unresolved"] = stats.get("eig_unresolved", 0) + nu
     return lam
 
 
