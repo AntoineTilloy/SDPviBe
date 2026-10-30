@@ -40,8 +40,11 @@ direction of Antoine Tilloy, and validated by comparing its iterations and outpu
   every output entry is rounded once (`rns.py`, `limbops.py`).
 * **Cholesky and triangular solves**: recursive, equilibrated fixed point, 32x32 base tiles on CUDA cores,
   batched over the SDP's blocks (`linalg.py`, `batched.py`, `basecase.py`).
-* **Solver** (`solver.py`): blocks batched by matrix dimension with inert padding; the step-length
-  eigenvalue uses a float64 copy.
+* **Solver** (`solver.py`): blocks batched by matrix dimension with inert padding. Step-length eigenvalues
+  come from a float64 copy with an error bound; a block where that bound could change the step length by
+  more than 1e-10 (relative) is recomputed in multiprecision, by deflating its large eigenvalues
+  (`refine_min_eig`).
+* **Design notes and history**: [docs/DEVLOG.md](docs/DEVLOG.md).
 * **Large problems** (`store.py`, `Layout` in `solver.py`): blocks are processed in chunks, and every
   per-chunk array is either GPU-resident or kept in pinned host memory and prefetched on side CUDA
   streams. The Gram matrix Q is accumulated in residue form across chunks with a single reconstruction per
@@ -87,7 +90,7 @@ machine compiles kernels, ~40 s).
 
 ## Example: the 3d Ising island at Λ=43
 
-On one workstation with three RTX 3090s power-capped at 250 W, SDPviBe solved every SDP of a blind
+On one workstation with three RTX 3090s power-capped at 260 W, SDPviBe solved every SDP of a blind
 recomputation of the σ–ε 3d Ising island at Λ=43, the precision of
 [Kos, Poland, Simmons-Duffin, Vichi 2016](https://arxiv.org/abs/1603.04436).
 The search used the navigator function ([arXiv:2104.09518](https://arxiv.org/abs/2104.09518)) with the
@@ -106,60 +109,6 @@ Each of the four ends is bracketed by an allowed point and a point excluded for 
 recomputed it. Cost: 893 solves, 183 GPU-hours, 87.6 h end to end. Much of the saving over 2016 is
 algorithmic (navigator, BFGS, hot starts), and no CPU SDPB run of the same workflow was made, so this
 is not a speedup measurement.
-
-## Performance
-
-For the October 2026 single-3090 optimization study (profiling, same-GPU before/after
-timings, numerical checks and reproduction commands), see [the detailed report](docs/PERFORMANCE_3090.md).
-
-Earlier RTX 5090 measurements, per iteration against official SDPB on 56-64 cores (AMD EPYC):
-
-| problem | SDPB (CPU) | SDPviBe (one RTX 5090) |
-|---|---|---|
-| mixed Ising nmax=10 | 9.45 s (56 cores) | 1.53 s |
-| mixed Ising nmax=14 | 17.96 s (64 cores) | 2.04 s |
-| mixed Ising nmax=18 (N=854, 1086 bits) | 36.68 s (64 cores) | 2.03 s (18x) |
-| stress-tensor system nmax=6 (N=742, 5x5 blocks) | 65.5 s (64 cores) | 3.8 s (17x; 129.5 min vs 8.4 min end to end) |
-
-**Refreshed October 24, 2026:** one, two and four RTX 3090s (24 GiB each) and one H100 80 GB SXM.
-Seconds per iteration, mean over iterations 2 onward; six iterations for synthetic stress-tensor-shaped
-SDPs at 832 bits, and a full solve for the real mixed-Ising case at 768 bits. All current GPU columns
-use hash-identical input files. The real CPU reference is a fresh SDPB 3.1 run on 16 Xeon 8480+ ranks.
-The synthetic CPU references are historical 64-thread EPYC timings: their original input hashes are
-unavailable, so those CPU/GPU ratios are indicative.
-
-| problem | N | SDP size | SDPB CPU reference | 1× 3090 | 2× 3090 | 4× 3090 | 1× H100 SXM |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| mixed Ising nmax=10 (real, 768 bits) | 274 | 0.1 GiB | 10.15 (16 ranks) | 0.82 (12.4×) | 0.58 (17.4×) | 0.60 (16.8×) | 0.55 (18.6×) |
-| stress-tensor nmax~6 | 742 | 1.8 GiB | 108 (64 threads, historical) | 5.13 (21.1×) | 3.40 (31.8×) | 2.81 (38.4×) | 2.56 (42.2×) |
-| stress-tensor nmax~8 | 1319 | 5.9 GiB | 344 (64 threads, historical) | 12.80 (26.9×) | 6.57 (52.4×) | 4.13 (83.2×) | 4.95 (69.5×) |
-| stress-tensor nmax~10 | 2061 | 14.7 GiB | 964 (64 threads, historical) | 24.40 (39.5×) | 13.52 (71.3×) | 8.17 (117.9×) | 11.30 (85.3×) |
-| stress-tensor nmax~12 | 2968 | 30.1 GiB | not run | 49.80 | 27.10 | 15.09 | 18.62 |
-| stress-tensor nmax~14 | 4040 | 54.3 GiB | not run | — | — | — | 29.75 |
-
-The RTX host has an EPYC 7282, 256 GB RAM and PCIe 3 ×16 connections without NVLink; the H100 is a
-700 W SXM model. The regenerated real input has 64 positivity blocks and differs from the earlier
-131-iteration fixture. Current results, numerical agreement, same-host baseline comparisons and VRAM
-measurements are documented in the [benchmark report](docs/BENCHMARK_20261024.md).
-
-Four GPUs reduce the N=2061 iteration from 24.40 to 8.17 seconds. The small real case measured slightly
-faster on two 3090s than four. Communication and work repeated on each GPU limit the available scaling. Larger cases also
-benefit from keeping more block data resident across several 24 GiB cards. One H100 runs the largest
-listed case, N=4040, at 29.75 seconds per iteration. These are throughput measurements, not claims of
-faster convergence; precision and termination criteria are unchanged.
-
-Earlier streaming measurements (synthetic SDPs with the stress-tensor system's block structure, scaled up; RTX PRO 6000 with
-96 GB, PCIe 5; "32 GB" is a hard cap emulating an RTX 5090):
-
-| nmax~ | N | data in host RAM | 96 GB card | 32 GB cap |
-|---|---|---|---|---|
-| 8  | 1319 | 18 GB  | 7.56 s/it (all resident) | 7.93 |
-| 10 | 2061 | 36 GB  | 17.6 | 15.6 |
-| 12 | 2968 | 62 GB  | 30.4 | 30.5 |
-| 14 | 4040 | 102 GB | 52.0 | 61.9 |
-| 16 | 5276 | 172 GB | 86.9 | 120.7 |
-
-Details, history and design notes: [docs/DEVLOG.md](docs/DEVLOG.md).
 
 ## Install
 
@@ -213,7 +162,7 @@ bin/sdpb -s sdp --precision 768 --findPrimalFeasible --findDualFeasible --writeS
 
 GPU memory is planned from the card's total memory (results are reproducible run to run);
 `SDPB_GPU_MEM_GB=<GB>` plans for (and enforces) a smaller budget. Other environment variables:
-`SDPB_GPU_TIMING=1` (per-phase times and memory peaks), `SDPB_GPU_STREAM=all|none`, `SDPB_GPU_CHUNK_GB`,
+`SDPB_GPU_TIMING=1` (per-phase times and memory peaks), `SDPB_GPU_EIG_TOL` (step-length accuracy, default 1e-10), `SDPB_GPU_STREAM=all|none`, `SDPB_GPU_CHUNK_GB`,
 `SDPB_GPU_PANELS`, `CUDA_VISIBLE_DEVICES` (which GPUs), `SDPVIBE_FAKE_GPUS=k` (testing: the multi-GPU
 code path with k slots on one GPU).
 
