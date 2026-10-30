@@ -4,14 +4,14 @@
 program solver of the conformal bootstrap, written almost entirely by an AI coding assistant (Claude,
 Anthropic) under the direction of Antoine Tilloy and validated against official SDPB. The same `sdpb` command line, the same input (SDPB's `pmp2sdp` output), the same
 output files, checkpoints and terminate reasons, and the same algorithm iteration by iteration, running on
-gamer GPUs. The [latest benchmark](docs/BENCHMARK_20261024.md) measures one, two and four RTX 3090s
+gamer GPUs. The [benchmark](docs/BENCHMARK_20261024.md) measures one, two and four RTX 3090s
 and one H100, with unchanged precision and stopping rules.
 
 ![SDPviBe speedup over SDPB](docs/speedup_3090.svg)
 
-<sub>GPU measurements refreshed October 24, 2026; mean time over iterations 2 onward.
-All GPU columns use identical SDP files. The real case has a fresh SDPB 3.1 reference on 16 CPU ranks;
-synthetic ratios use historical 64-thread CPU timings and are indicative.
+<sub>Speedup = SDPB 3.1's time per iteration on **64 cores of an AMD EPYC node** / SDPviBe's on GPU (mean
+over iterations 2 onward). Synthetic SDPs with the block structure of the Ising stress-tensor system;
+SDPB ran on SDPs from the same generator.
 [Data](docs/bench_3090.json) · [Protocol and validation](docs/BENCHMARK_20261024.md).</sub>
 
 ```bash
